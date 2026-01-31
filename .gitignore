@@ -1,5 +1,8 @@
 # custom ignores
 node_modules/
+dist/
+web/css/style.css
+
 data/
 build/
 
