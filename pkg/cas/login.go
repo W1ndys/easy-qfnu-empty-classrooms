@@ -18,11 +18,11 @@ import (
 
 const (
 	// URL 常量
-	URLService  = "http://zhjw.qfnu.edu.cn/sso.jsp"
-	URLLogin    = "http://ids.qfnu.edu.cn/authserver/login"
-	URLMainPage = "http://zhjw.qfnu.edu.cn/jsxsd/framework/xsMain.jsp"
-	// URLMainPage = "http://zhjw.qfnu.edu.cn/jsxsd/framework/jsMain.jsp" // 教师端请使用这个
-	URLSuccessMark = "教学一体化服务平台" // 登录成功的页面标识
+	URLService = "http://zhjw.qfnu.edu.cn/sso.jsp"
+	URLLogin   = "http://ids.qfnu.edu.cn/authserver/login"
+	// URLMainPage = "http://zhjw.qfnu.edu.cn/jsxsd/framework/xsMain.jsp" // 学生端请使用这个
+	URLMainPage    = "http://zhjw.qfnu.edu.cn/jsxsd/framework/jsMain.jsp" // 教师端请使用这个
+	URLSuccessMark = "教学一体化服务平台"                                          // 登录成功的页面标识
 )
 
 // Login 执行完整的 CAS 登录流程
