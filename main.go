@@ -6,11 +6,11 @@ import (
 	"os"
 	"time"
 
-	v1 "github.com/W1ndys/qfnu-cas-go/internal/api/v1"
-	"github.com/W1ndys/qfnu-cas-go/internal/service"
-	"github.com/W1ndys/qfnu-cas-go/pkg/cas"
-	"github.com/W1ndys/qfnu-cas-go/pkg/logger"
-	"github.com/W1ndys/qfnu-cas-go/web"
+	v1 "github.com/W1ndys/easy-qfnu-empty-classrooms/internal/api/v1"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/internal/service"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/pkg/cas"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/pkg/logger"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/web"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )

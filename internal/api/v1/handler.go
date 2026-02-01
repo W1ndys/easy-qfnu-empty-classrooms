@@ -3,8 +3,8 @@ package v1
 import (
 	"net/http"
 
-	"github.com/W1ndys/qfnu-cas-go/internal/model"
-	"github.com/W1ndys/qfnu-cas-go/internal/service"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/internal/model"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

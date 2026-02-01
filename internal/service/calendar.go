@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/W1ndys/qfnu-cas-go/internal/model"
-	"github.com/W1ndys/qfnu-cas-go/pkg/cas"
-	"github.com/W1ndys/qfnu-cas-go/pkg/logger"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/internal/model"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/pkg/cas"
+	"github.com/W1ndys/easy-qfnu-empty-classrooms/pkg/logger"
 )
 
 type CalendarService struct {
