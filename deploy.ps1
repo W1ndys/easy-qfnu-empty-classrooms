@@ -96,21 +96,65 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "无法创建远程目录，请检查连接或权限。"
 }
 
-# 4. 使用 Tar + SSH 上传二进制文件
+# 4. 使用 Tar + SSH 上传二进制文件 (通过 Git Bash)
 Write-Host "[-] 正在上传二进制文件..." -ForegroundColor Cyan
 
-# 构造上传命令：
+# 查找 Git Bash (优先使用 Git for Windows，避免 WSL)
+$gitBashPaths = @(
+    "$env:ProgramFiles\Git\bin\bash.exe",
+    "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
+    "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe",
+    "$env:ProgramFiles\Git\usr\bin\bash.exe"
+)
+
+$bashExe = $null
+foreach ($path in $gitBashPaths) {
+    if (Test-Path $path) {
+        $bashExe = $path
+        break
+    }
+}
+
+# 如果预设路径找不到，尝试从 PATH 中查找 Git 目录下的 bash
+if (-not $bashExe) {
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        # git.exe 通常在 Git\cmd 目录，bash 在 Git\bin 目录
+        $gitDir = Split-Path (Split-Path $gitCmd.Source -Parent) -Parent
+        $gitBash = Join-Path $gitDir "bin\bash.exe"
+        if (Test-Path $gitBash) {
+            $bashExe = $gitBash
+        }
+    }
+}
+
+if (-not $bashExe) {
+    Write-Error "未找到 Git Bash，请确保已安装 Git for Windows。"
+}
+
+Write-Host "[-] 使用 Git Bash: $bashExe" -ForegroundColor DarkGray
+
+# 将 Windows 路径转换为 Unix 风格路径 (用于 Git Bash)
+$unixIdentityFile = $IdentityFile -replace '\\', '/' -replace '^([A-Za-z]):', '/$1'
+
+# 构造 bash 命令：
 # 1. 本地 tar 打包二进制文件
 # 2. SSH 传输
 # 3. 远程 tar 解压
 # 4. 远程 chmod +x 赋予执行权限
-$uploadCmdString = "tar -c $BinaryName | ssh -i `"$IdentityFile`" -p $Port -o StrictHostKeyChecking=no $User@$Server `"tar -x -C $RemotePath && chmod +x $RemotePath/$BinaryName`""
+$bashCmd = "tar -c $BinaryName | ssh -i '$unixIdentityFile' -p $Port -o StrictHostKeyChecking=no $User@$Server 'tar -x -C $RemotePath && chmod +x $RemotePath/$BinaryName'"
 
 Write-Host "Executing: Upload..." -ForegroundColor DarkGray
-Invoke-Expression $uploadCmdString
+& $bashExe -c $bashCmd
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[+] 文件上传成功!" -ForegroundColor Green
+
+    # 删除本地构建产物
+    if (Test-Path $BinaryName) {
+        Remove-Item $BinaryName -Force
+        Write-Host "[-] 已清理本地构建产物: $BinaryName" -ForegroundColor DarkGray
+    }
 } else {
     Write-Error "文件上传失败。"
 }
