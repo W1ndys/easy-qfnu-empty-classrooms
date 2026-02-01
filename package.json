@@ -1,5 +1,5 @@
 {
-  "name": "qfnu-empty-classrooms",
+  "name": "easy-qfnu-empty-classrooms",
   "version": "1.0.0",
   "description": "曲阜师范大学 (QFNU) 统一身份认证 (CAS) 登录的 Go 语言实现。",
   "scripts": {
