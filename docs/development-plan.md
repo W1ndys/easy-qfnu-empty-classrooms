@@ -24,7 +24,7 @@
 采用分层架构设计，确保代码模块化、单一职责。
 
 ```text
-qfnu-empty-classrooms/
+easy-qfnu-empty-classrooms/
 ├── cmd/
 │   └── server/
 │       └── main.go           # 程序入口，负责初始化和启动 Server
