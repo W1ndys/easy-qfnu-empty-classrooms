@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// ANSI Color Codes
+// ANSI 颜色代码
 const (
 	ColorReset  = "\033[0m"
 	ColorRed    = "\033[31m"
@@ -52,7 +52,7 @@ func (h *GeekHandler) Handle(ctx context.Context, r slog.Record) error {
 	case slog.LevelError:
 		prefix = "[ERROR]"
 		color = ColorRed
-	case slog.Level(12): // Custom Fatal Level
+	case slog.Level(12): // 自定义 Fatal 级别
 		prefix = "[FATAL]"
 		color = ColorPurple
 	default:
@@ -60,15 +60,15 @@ func (h *GeekHandler) Handle(ctx context.Context, r slog.Record) error {
 		color = ColorReset
 	}
 
-	// Format timestamp
+	// 格式化时间戳
 	timeStr := r.Time.Format("2006-01-02 15:04:05.000")
 
-	// Main log message
-	// Format: [COLOR]TIME [LEVEL] >> Message[RESET]
+	// 主日志消息
+	// 格式：[颜色]时间 [级别] >> 消息[重置颜色]
 	msg := fmt.Sprintf("%s%s %s >> %s%s", color, timeStr, prefix, r.Message, ColorReset)
 
-	// Handle attributes (if any)
-	// We append them as key=value pairs after the message, in gray
+	// 处理属性（如果有）
+	// 我们将它们作为 key=value 对附加在消息后面，使用灰色显示
 	if r.NumAttrs() > 0 {
 		msg += fmt.Sprintf(" %s{", ColorGray)
 		r.Attrs(func(a slog.Attr) bool {
@@ -83,11 +83,57 @@ func (h *GeekHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *GeekHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// For simplicity in this geek implementation, we return same handler
-	// In a full implementation, we'd copy handler and add pre-formatted attrs
+	// 为了简化这个极客实现，我们返回相同的处理器
+	// 在完整的实现中，我们会复制处理器并添加预格式化的属性
 	return h
 }
 
 func (h *GeekHandler) WithGroup(name string) slog.Handler {
 	return h
+}
+
+// FanoutHandler 将日志广播给多个处理器
+type FanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func NewFanoutHandler(handlers ...slog.Handler) *FanoutHandler {
+	return &FanoutHandler{handlers: handlers}
+}
+
+func (h *FanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *FanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, r.Level) {
+			if err := handler.Handle(ctx, r); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (h *FanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithAttrs(attrs)
+	}
+	return NewFanoutHandler(newHandlers...)
+}
+
+func (h *FanoutHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithGroup(name)
+	}
+	return NewFanoutHandler(newHandlers...)
 }
