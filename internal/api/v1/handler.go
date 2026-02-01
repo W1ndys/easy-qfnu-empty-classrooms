@@ -16,6 +16,27 @@ func NewHandler(cs *service.ClassroomService) *Handler {
 	return &Handler{classroomService: cs}
 }
 
+// GetStatus 返回系统状态，包括是否在教学周历内
+func (h *Handler) GetStatus(c *gin.Context) {
+	cal := service.GetCalendarService()
+	if cal == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":                "日历服务未初始化",
+			"in_teaching_calendar": false,
+			"current_week":         0,
+			"current_term":         "",
+		})
+		return
+	}
+
+	inCalendar := cal.IsInTeachingCalendar()
+	c.JSON(http.StatusOK, gin.H{
+		"in_teaching_calendar": inCalendar,
+		"current_week":         cal.GetBaseWeek(),
+		"current_term":         cal.GetCurrentYearStr(),
+	})
+}
+
 func (h *Handler) QueryClassrooms(c *gin.Context) {
 	var req model.QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

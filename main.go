@@ -85,6 +85,7 @@ func main() {
 	// API 路由
 	api := r.Group("/api/v1")
 	{
+		api.GET("/status", apiHandler.GetStatus)
 		api.POST("/query", apiHandler.QueryClassrooms)
 	}
 

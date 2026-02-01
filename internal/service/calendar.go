@@ -13,7 +13,6 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/W1ndys/qfnu-cas-go/internal/model"
 	"github.com/W1ndys/qfnu-cas-go/pkg/cas"
-
 )
 
 type CalendarService struct {
@@ -122,6 +121,27 @@ func (s *CalendarService) Refresh() error {
 	return nil
 }
 
+// IsInTeachingCalendar 检查当前是否在教学周历内
+func (s *CalendarService) IsInTeachingCalendar() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.baseWeek > 0
+}
+
+// GetBaseWeek 获取当前基准周次
+func (s *CalendarService) GetBaseWeek() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.baseWeek
+}
+
+// GetCurrentYearStr 获取当前学年学期字符串
+func (s *CalendarService) GetCurrentYearStr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentYearStr
+}
+
 // GetDateInfo 根据偏移量计算目标日期的信息
 func (s *CalendarService) GetDateInfo(offset int) (info model.CalendarInfo, dateStr string) {
 	s.mu.RLock()
@@ -145,10 +165,14 @@ func (s *CalendarService) GetDateInfo(offset int) (info model.CalendarInfo, date
 	// Go 的 Weekday: Sunday=0, Monday=1
 	// 强智教务系统通常 Monday=1, Sunday=7
 	baseWeekday := int(s.baseTime.Weekday())
-	if baseWeekday == 0 { baseWeekday = 7 }
+	if baseWeekday == 0 {
+		baseWeekday = 7
+	}
 
 	targetWeekday := int(targetDate.Weekday())
-	if targetWeekday == 0 { targetWeekday = 7 }
+	if targetWeekday == 0 {
+		targetWeekday = 7
+	}
 
 	// 计算当前周的周一日期
 	// ... 比较繁琐，这里采用简单近似：
