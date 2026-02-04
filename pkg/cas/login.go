@@ -27,6 +27,11 @@ const (
 
 // Login 执行完整的 CAS 登录流程
 func (c *Client) Login(ctx context.Context, username, password string) error {
+	// 保存凭据用于后续自动重登录
+	// 注意：这里没有加锁，假设 Login 仅在初始化或由 retryWithReLogin（已加锁）调用
+	c.username = username
+	c.password = password
+
 	// 0. 检查是否需要验证码
 	if err := c.checkNeedCaptcha(ctx, username); err != nil {
 		return err
