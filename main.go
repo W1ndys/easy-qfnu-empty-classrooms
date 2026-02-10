@@ -87,11 +87,31 @@ func main() {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
 	})
 
+	// 显式添加其他 HTML 页面的路由
+	r.GET("/empty-classroom", func(c *gin.Context) {
+		content, err := web.StaticFS.ReadFile("empty-classroom.html")
+		if err != nil {
+			c.String(http.StatusNotFound, "404 Not Found")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
+	})
+
+	r.GET("/full-day-status", func(c *gin.Context) {
+		content, err := web.StaticFS.ReadFile("full-day-status.html")
+		if err != nil {
+			c.String(http.StatusNotFound, "404 Not Found")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
+	})
+
 	// API 路由
 	api := r.Group("/api/v1")
 	{
 		api.GET("/status", apiHandler.GetStatus)
 		api.POST("/query", apiHandler.QueryClassrooms)
+		api.POST("/query-full-day", apiHandler.QueryFullDayStatus)
 	}
 
 	// 启动
