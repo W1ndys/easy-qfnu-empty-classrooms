@@ -26,7 +26,7 @@ param(
     [string]$RemotePath = "/root/easy-qfnu-empty-classrooms",
 
     # 部署完成后执行的命令
-    [string]$RestartCmd = "echo 'Deploy finished, no restart command specified.'",
+    [string]$RestartCmd = "supervisorctl restart easy-qfnu-empty-classrooms:easy-qfnu-empty-classrooms_00",
 
     # 本地项目路径
     [string]$LocalPath = ".",
