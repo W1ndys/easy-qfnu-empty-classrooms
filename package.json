@@ -6,8 +6,9 @@
     "dev:css": "tailwindcss -i ./web/css/input.css -o ./web/css/style.css --watch",
     "build:css": "tailwindcss -i ./web/css/input.css -o ./web/css/style.css --minify"
   },
-  "dependencies": {
-    "@tailwindcss/cli": "^4.1.18",
-    "tailwindcss": "^4.1.18"
+  "devDependencies": {
+    "autoprefixer": "^10.4.24",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19"
   }
 }
