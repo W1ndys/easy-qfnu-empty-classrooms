@@ -63,3 +63,25 @@ func (h *Handler) QueryClassrooms(c *gin.Context) {
 
 	c.JSON(http.StatusOK, resp)
 }
+
+// QueryFullDayStatus 查询全天教室状态
+func (h *Handler) QueryFullDayStatus(c *gin.Context) {
+	var req model.FullDayQueryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数格式错误"})
+		return
+	}
+
+	if req.BuildingName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入教学楼名称"})
+		return
+	}
+
+	resp, err := h.classroomService.GetFullDayStatus(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
