@@ -46,7 +46,7 @@
 
 ## 三、目录结构设计
 
-重构后前端代码将放置在项目根目录下的 `frontend/` 目录中，构建产物输出到 `web/dist/` 目录供 Go embed 嵌入。
+重构后前端代码将放置在项目根目录下的 `frontend/` 目录中，构建产物直接输出到 `web/` 目录供 Go embed 嵌入（与现有方式一致，`web/` 目录下不再嵌套 `dist/` 子目录）。
 
 ```
 frontend/                          # Vue 3 前端源码目录（新增）
@@ -85,15 +85,14 @@ frontend/                          # Vue 3 前端源码目录（新增）
 │   └── utils/
 │       └── date.js                # 日期工具函数
 │
-web/                               # Go embed 目录（修改）
-├── assets.go                      # 修改 embed 指令，嵌入 dist/ 目录
-└── dist/                          # Vite 构建产物输出目录（构建时生成）
-    ├── index.html
-    ├── assets/
-    │   ├── index-[hash].js
-    │   └── index-[hash].css
-    └── images/
-        └── qrcode.png
+web/                               # Go embed 目录（构建产物直接输出到此处）
+├── assets.go                      # embed 指令，嵌入构建产物
+├── index.html                     # Vite 构建生成的入口 HTML（构建时覆盖）
+├── assets/                        # Vite 构建生成的静态资源目录
+│   ├── index-[hash].js
+│   └── index-[hash].css
+└── images/
+    └── qrcode.png                 # Vite 构建时复制的图片资源
 ```
 
 ---
@@ -115,16 +114,16 @@ web/                               # Go embed 目录（修改）
 
 脚本命令：
 - `dev`：启动 Vite 开发服务器（带 API 代理）
-- `build`：构建生产版本，输出到 `../web/dist/`
+- `build`：构建生产版本，输出到 `../web/`
 - `preview`：本地预览构建产物
 
 #### 4.1.3 `frontend/vite.config.js`
 
 关键配置项：
-- **输出目录**：`outDir: '../web/dist'`，确保构建产物放到 Go embed 能读取的位置
+- **输出目录**：`outDir: '../web'`，构建产物直接输出到 `web/` 目录，与 Go embed 无缝对接
 - **base**：设置为 `'./'` 或 `'/'`，确保资源路径正确
 - **开发代理**：将 `/api` 请求代理到 Go 后端（默认 `http://localhost:8080`），实现前后端分离开发
-- **构建清理**：每次构建前清空 `dist/` 目录
+- **构建清理**：`emptyOutDir: true`，每次构建前清空输出目录中的旧产物（注意需保留 `assets.go`，可通过配置排除或在构建脚本中处理）
 
 #### 4.1.4 `frontend/tailwind.config.js`
 
@@ -418,14 +417,14 @@ Vite 会自动处理图片的 hash 命名和路径。
 
 ### 5.1 `web/assets.go` 修改
 
-将 embed 指令修改为嵌入 Vite 的构建产物：
+由于构建产物直接输出到 `web/` 目录，embed 指令只需调整为嵌入构建后的文件即可：
 
 ```go
-//go:embed dist
+//go:embed index.html assets images
 var StaticFS embed.FS
 ```
 
-注意：由于 `embed.FS` 的路径会包含 `dist/` 前缀，在使用时需要通过 `fs.Sub` 去除前缀。
+与现有方案类似，直接嵌入 `index.html`、`assets/`（Vite 构建的 JS/CSS）和 `images/` 目录。无需 `fs.Sub()` 去除路径前缀，使用方式与当前完全一致。
 
 ### 5.2 `main.go` 路由修改
 
@@ -438,17 +437,17 @@ var StaticFS embed.FS
 具体修改：
 - 移除对 `empty-classroom.html` 和 `full-day-status.html` 的显式 `ReadFile` 路由
 - 移除旧的 `/static` 路由
-- 添加 `dist/assets/` 的静态文件服务
-- 添加 `dist/images/` 的静态文件服务（如有）
-- 添加 SPA fallback：未匹配的路由返回 `dist/index.html`
+- 添加 `assets/` 的静态文件服务（Vite 构建的 JS/CSS）
+- 添加 `images/` 的静态文件服务（如有）
+- 添加 SPA fallback：未匹配的路由返回 `index.html`
 
 ### 5.3 路由伪代码逻辑
 
 ```
 GET /api/v1/*        → API Handler（不变）
-GET /assets/*        → 静态文件（dist/assets/）
-GET /images/*        → 静态文件（dist/images/，如有）
-GET /*               → dist/index.html（SPA fallback）
+GET /assets/*        → 静态文件（web/assets/）
+GET /images/*        → 静态文件（web/images/，如有）
+GET /*               → index.html（SPA fallback）
 ```
 
 ---
@@ -470,7 +469,7 @@ GET /*               → dist/index.html（SPA fallback）
 ```bash
 # 1. 构建前端
 cd frontend && npm run build
-# 产物输出到 ../web/dist/
+# 产物直接输出到 ../web/ 目录
 
 # 2. 构建 Go 二进制（embed 包含前端产物）
 go build -o app .
@@ -504,10 +503,11 @@ go build -o app .
 ```gitignore
 # Vue 3 前端
 frontend/node_modules/
-frontend/dist/
 
-# Vite 构建产物（嵌入 Go 二进制前需要先构建）
-web/dist/
+# Vite 构建产物（嵌入 Go 二进制前需要先构建，web/ 目录下除 assets.go 外均为生成文件）
+web/index.html
+web/assets/
+web/images/
 
 # 移除旧的 CSS 忽略规则（如果有）
 # web/css/style.css  ← 不再需要
@@ -610,17 +610,15 @@ web/dist/
 
 Vue Router 使用 HTML5 History 模式时，用户直接访问 `/empty-classroom` 或刷新页面时，请求会到达 Go 后端。后端必须对所有未匹配的路由返回 `index.html`，否则会 404。这是最关键的后端修改点。
 
-### 11.2 Go embed 的路径前缀
+### 11.2 Go embed 路径
 
-使用 `//go:embed dist` 时，`embed.FS` 中的文件路径会带有 `dist/` 前缀。例如读取 `index.html` 需要使用 `dist/index.html`。建议使用 `io/fs` 包的 `fs.Sub()` 函数去除前缀：
+由于构建产物直接输出到 `web/` 目录（无 `dist/` 子目录），`embed.FS` 的使用方式与现有方案完全一致，无需 `fs.Sub()` 等额外处理。例如读取 `index.html` 直接使用 `StaticFS.ReadFile("index.html")` 即可。
 
-```go
-subFS, _ := fs.Sub(StaticFS, "dist")
-```
+需要注意的是，`web/assets.go` 是手动维护的 Go 源文件，Vite 构建时不能覆盖它。建议在 Vite 配置中设置 `emptyOutDir: false`（不自动清理输出目录），改为在构建脚本中手动清理旧的构建产物（如 `web/assets/`、`web/index.html`），保留 `web/assets.go`。
 
 ### 11.3 构建顺序
 
-部署时必须**先构建前端**（`npm run build`），再构建 Go 二进制。否则 `web/dist/` 目录不存在会导致 Go 编译失败（embed 找不到文件）。`deploy.ps1` 需要相应更新。
+部署时必须**先构建前端**（`npm run build`），再构建 Go 二进制。否则 `web/` 目录中缺少 `index.html` 和 `assets/` 会导致 Go 编译失败（embed 找不到文件）。`deploy.ps1` 需要相应更新。
 
 ### 11.4 开发环境双服务器
 
@@ -628,4 +626,4 @@ subFS, _ := fs.Sub(StaticFS, "dist")
 
 ### 11.5 首次构建问题
 
-由于 `web/dist/` 是 gitignore 的目录，新克隆的项目需要先执行 `cd frontend && npm install && npm run build` 才能编译 Go 项目。建议在 README 中明确说明这一点。
+由于 `web/` 目录下的构建产物（`index.html`、`assets/`）是 gitignore 的，新克隆的项目需要先执行 `cd frontend && npm install && npm run build` 才能编译 Go 项目。建议在 README 中明确说明这一点。
