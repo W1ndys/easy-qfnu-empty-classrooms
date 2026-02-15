@@ -59,7 +59,25 @@ if (-not (Test-Path $IdentityFile)) {
 # 构建基础 SSH 命令前缀
 $sshCmdPrefix = @("ssh", "-i", "$IdentityFile", "-p", "$Port", "-o", "StrictHostKeyChecking=no", "$User@$Server")
 
-# 2. 交叉编译 (Windows -> Linux)
+# 2. 构建前端产物
+Write-Host "[-] 正在构建前端产物..." -ForegroundColor Cyan
+Push-Location $LocalPath
+try {
+    if (-not (Test-Path "frontend")) {
+        Write-Error "未找到 frontend 目录，无法执行前端构建。"
+    }
+
+    npm --prefix frontend run build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "前端构建失败，请检查 Node.js 环境或前端代码错误。"
+    }
+    Write-Host "[-] 前端构建完成。" -ForegroundColor Green
+}
+finally {
+    Pop-Location
+}
+
+# 3. 交叉编译 (Windows -> Linux)
 Write-Host "[-] 正在编译 Linux (amd64) 二进制文件..." -ForegroundColor Cyan
 $ProjectName = "easy-qfnu-empty-classrooms"
 $TargetOS = "linux"
@@ -88,7 +106,7 @@ finally {
     $env:GOARCH = $OriginalGOARCH
 }
 
-# 3. 检查并修复远程路径 (mkdir -p)
+# 4. 检查并修复远程路径 (mkdir -p)
 Write-Host "[-] 正在检查/创建远程目录: $RemotePath" -ForegroundColor Cyan
 $mkdirCmd = $sshCmdPrefix + "mkdir -p $RemotePath"
 & $mkdirCmd[0] $mkdirCmd[1..($mkdirCmd.Length-1)]
@@ -96,7 +114,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "无法创建远程目录，请检查连接或权限。"
 }
 
-# 4. 使用 Tar + SSH 上传二进制文件 (通过 Git Bash)
+# 5. 使用 Tar + SSH 上传二进制文件 (通过 Git Bash)
 Write-Host "[-] 正在上传二进制文件..." -ForegroundColor Cyan
 
 # 查找 Git Bash (优先使用 Git for Windows，避免 WSL)
@@ -159,7 +177,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Error "文件上传失败。"
 }
 
-# 5. 执行远程重启命令
+# 6. 执行远程重启命令
 if (-not [string]::IsNullOrEmpty($RestartCmd)) {
     Write-Host "[-] 正在执行远程命令: $RestartCmd" -ForegroundColor Cyan
     $remoteExec = $sshCmdPrefix + $RestartCmd

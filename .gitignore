@@ -1,8 +1,12 @@
 # custom ignores
 node_modules/
+frontend/node_modules/
 dist/
 logs/
-web/css/style.css
+web/index.html
+web/assets/*
+!web/assets/placeholder.txt
+web/images/
 
 data/
 build/
