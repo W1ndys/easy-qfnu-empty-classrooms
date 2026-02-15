@@ -2,5 +2,5 @@ package web
 
 import "embed"
 
-//go:embed index.html empty-classroom.html full-day-status.html css images
+//go:embed index.html assets
 var StaticFS embed.FS

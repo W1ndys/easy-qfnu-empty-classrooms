@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	v1 "github.com/W1ndys/easy-qfnu-empty-classrooms/internal/api/v1"
@@ -68,43 +70,17 @@ func main() {
 
 	// 3. 设置 Gin
 	r := gin.Default()
-	// 禁用 Gin 的自动重定向行为，防止 index.html 路径与 / 路径发生死循环
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
 
-	// 静态文件服务 (Embed)
-	// web.StaticFS 根目录下就是 index.html 和 css/
-	r.StaticFS("/static", http.FS(web.StaticFS))
-
-	// 根路径返回 index.html (显式读取模式)
-	// 使用 ReadFile 显式加载并返回，避免 FileFromFS 可能触发的路径重定向问题
-	r.GET("/", func(c *gin.Context) {
+	serveIndex := func(c *gin.Context) {
 		content, err := web.StaticFS.ReadFile("index.html")
 		if err != nil {
 			c.String(http.StatusInternalServerError, "无法加载 index.html")
 			return
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
-	})
-
-	// 显式添加其他 HTML 页面的路由
-	r.GET("/empty-classroom", func(c *gin.Context) {
-		content, err := web.StaticFS.ReadFile("empty-classroom.html")
-		if err != nil {
-			c.String(http.StatusNotFound, "404 Not Found")
-			return
-		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
-	})
-
-	r.GET("/full-day-status", func(c *gin.Context) {
-		content, err := web.StaticFS.ReadFile("full-day-status.html")
-		if err != nil {
-			c.String(http.StatusNotFound, "404 Not Found")
-			return
-		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
-	})
+	}
 
 	// API 路由
 	api := r.Group("/api/v1")
@@ -113,6 +89,31 @@ func main() {
 		api.POST("/query", apiHandler.QueryClassrooms)
 		api.POST("/query-full-day", apiHandler.QueryFullDayStatus)
 	}
+
+	// 静态资源路由
+	assetsFS, err := fs.Sub(web.StaticFS, "assets")
+	if err != nil {
+		logger.Fatal("无法加载 assets 目录：%v", err)
+	}
+
+	r.StaticFS("/assets", http.FS(assetsFS))
+
+	// SPA 首页和回退路由
+	r.GET("/", serveIndex)
+	r.NoRoute(func(c *gin.Context) {
+		if c.Request.Method != http.MethodGet {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/images/") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
+		serveIndex(c)
+	})
 
 	// 启动
 	port := os.Getenv("PORT")
