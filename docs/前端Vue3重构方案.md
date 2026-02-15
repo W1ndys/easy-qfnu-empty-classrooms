@@ -88,11 +88,10 @@ frontend/                          # Vue 3 前端源码目录（新增）
 web/                               # Go embed 目录（构建产物直接输出到此处）
 ├── assets.go                      # embed 指令，嵌入构建产物
 ├── index.html                     # Vite 构建生成的入口 HTML（构建时覆盖）
-├── assets/                        # Vite 构建生成的静态资源目录
-│   ├── index-[hash].js
-│   └── index-[hash].css
-└── images/
-    └── qrcode.png                 # Vite 构建时复制的图片资源
+└── assets/                        # Vite 构建生成的所有静态资源（JS/CSS/图片统一带哈希）
+    ├── index-[hash].js
+    ├── index-[hash].css
+    └── qrcode-[hash].png          # 图片也由 Vite 统一处理到 assets/ 下
 ```
 
 ---
@@ -417,14 +416,14 @@ Vite 会自动处理图片的 hash 命名和路径。
 
 ### 5.1 `web/assets.go` 修改
 
-由于构建产物直接输出到 `web/` 目录，embed 指令只需调整为嵌入构建后的文件即可：
+由于构建产物直接输出到 `web/` 目录，embed 指令只需嵌入构建后的文件即可：
 
 ```go
-//go:embed index.html assets images
+//go:embed index.html assets
 var StaticFS embed.FS
 ```
 
-与现有方案类似，直接嵌入 `index.html`、`assets/`（Vite 构建的 JS/CSS）和 `images/` 目录。无需 `fs.Sub()` 去除路径前缀，使用方式与当前完全一致。
+Vite 会将所有静态资源（JS、CSS、图片）统一输出到 `assets/` 目录并带上内容哈希。Vue 组件中通过 `import` 引入的图片会自动解析为正确的哈希路径，无需手动管理 `images/` 目录。embed 只需嵌入 `index.html` 和 `assets/` 即可。
 
 ### 5.2 `main.go` 路由修改
 
@@ -437,16 +436,14 @@ var StaticFS embed.FS
 具体修改：
 - 移除对 `empty-classroom.html` 和 `full-day-status.html` 的显式 `ReadFile` 路由
 - 移除旧的 `/static` 路由
-- 添加 `assets/` 的静态文件服务（Vite 构建的 JS/CSS）
-- 添加 `images/` 的静态文件服务（如有）
+- 添加 `assets/` 的静态文件服务（Vite 构建的 JS、CSS、图片等均在此目录下）
 - 添加 SPA fallback：未匹配的路由返回 `index.html`
 
 ### 5.3 路由伪代码逻辑
 
 ```
 GET /api/v1/*        → API Handler（不变）
-GET /assets/*        → 静态文件（web/assets/）
-GET /images/*        → 静态文件（web/images/，如有）
+GET /assets/*        → 静态文件（web/assets/，包含 JS、CSS、图片等所有带哈希的资源）
 GET /*               → index.html（SPA fallback）
 ```
 
@@ -507,7 +504,6 @@ frontend/node_modules/
 # Vite 构建产物（嵌入 Go 二进制前需要先构建，web/ 目录下除 assets.go 外均为生成文件）
 web/index.html
 web/assets/
-web/images/
 
 # 移除旧的 CSS 忽略规则（如果有）
 # web/css/style.css  ← 不再需要
@@ -614,11 +610,13 @@ Vue Router 使用 HTML5 History 模式时，用户直接访问 `/empty-classroom
 
 由于构建产物直接输出到 `web/` 目录（无 `dist/` 子目录），`embed.FS` 的使用方式与现有方案完全一致，无需 `fs.Sub()` 等额外处理。例如读取 `index.html` 直接使用 `StaticFS.ReadFile("index.html")` 即可。
 
+Vite 会将所有通过 `import` 引入的图片统一处理到 `assets/` 目录并自动添加内容哈希（如 `qrcode-a1b2c3d4.png`），Vue 组件中引用的路径会在构建时自动解析为正确的哈希文件名，无需手动管理图片路径。因此 `web/` 目录下不会有单独的 `images/` 目录。
+
 需要注意的是，`web/assets.go` 是手动维护的 Go 源文件，Vite 构建时不能覆盖它。建议在 Vite 配置中设置 `emptyOutDir: false`（不自动清理输出目录），改为在构建脚本中手动清理旧的构建产物（如 `web/assets/`、`web/index.html`），保留 `web/assets.go`。
 
 ### 11.3 构建顺序
 
-部署时必须**先构建前端**（`npm run build`），再构建 Go 二进制。否则 `web/` 目录中缺少 `index.html` 和 `assets/` 会导致 Go 编译失败（embed 找不到文件）。`deploy.ps1` 需要相应更新。
+部署时必须**先构建前端**（`npm run build`），再构建 Go 二进制。否则 `web/` 目录中缺少 `index.html` 和 `assets/` 会导致 Go 编译失败（embed 找不到声明的文件）。`deploy.ps1` 需要相应更新。
 
 ### 11.4 开发环境双服务器
 
