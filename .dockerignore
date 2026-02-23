@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+.spec-workflow
+logs
+tmp
+node_modules
+frontend/node_modules
+frontend/dist
+*.tar
+*.tgz
+*.zip
+*.log
+README.md
+deploy.ps1
