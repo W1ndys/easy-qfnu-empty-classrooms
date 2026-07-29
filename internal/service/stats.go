@@ -150,7 +150,7 @@ func createNewTable(db *sql.DB) error {
 			result_count INTEGER NOT NULL DEFAULT 0,
 			ip TEXT NOT NULL DEFAULT '',
 			ua_hash TEXT NOT NULL DEFAULT '',
-			queried_at DATETIME DEFAULT (datetime('now'))
+			queried_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		);
 		CREATE INDEX IF NOT EXISTS idx_queried_at ON query_logs(queried_at);
 		CREATE INDEX IF NOT EXISTS idx_keyword ON query_logs(keyword);
@@ -242,8 +242,8 @@ func (s *StatsService) RecordQuery(record model.QueryRecord) {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		"INSERT INTO query_logs (keyword, date_offset, start_node, end_node, result_count, ip, ua_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		record.Keyword, record.DateOffset, record.StartNode, record.EndNode, record.ResultCount, record.IP, record.UAHash,
+		"INSERT INTO query_logs (keyword, date_offset, start_node, end_node, result_count, ip, ua_hash, queried_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		record.Keyword, record.DateOffset, record.StartNode, record.EndNode, record.ResultCount, record.IP, record.UAHash, nowUTCForStorage(),
 	)
 	if err != nil {
 		logger.Warn("记录搜索查询失败: %v", err)

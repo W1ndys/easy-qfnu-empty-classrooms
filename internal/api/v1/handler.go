@@ -14,13 +14,13 @@ import (
 )
 
 type Handler struct {
-	classroomService *service.ClassroomService
-	statsService     *service.StatsService
-	apiConfigService *service.APIConfigService
+	classroomService     *service.ClassroomService
+	statsService         *service.StatsService
+	openAPIConfigService *service.OpenAPIConfigService
 }
 
-func NewHandler(cs *service.ClassroomService, ss *service.StatsService, acs *service.APIConfigService) *Handler {
-	return &Handler{classroomService: cs, statsService: ss, apiConfigService: acs}
+func NewHandler(cs *service.ClassroomService, ss *service.StatsService, oacs *service.OpenAPIConfigService) *Handler {
+	return &Handler{classroomService: cs, statsService: ss, openAPIConfigService: oacs}
 }
 
 // hashUA 对 User-Agent 做 SHA256 并返回前 16 个十六进制字符 (与 middleware.RateLimiter 的哈希策略一致)
@@ -40,7 +40,7 @@ func (h *Handler) GetStatus(c *gin.Context) {
 		"message": upstream.Message,
 	}
 	if !upstream.UpdatedAt.IsZero() {
-		upstreamPayload["updated_at"] = upstream.UpdatedAt
+		upstreamPayload["updated_at"] = upstream.UpdatedAt.UTC()
 	}
 
 	cal := service.GetCalendarService()
@@ -69,11 +69,6 @@ func (h *Handler) QueryClassrooms(c *gin.Context) {
 	h.queryClassrooms(c, true)
 }
 
-// AIQueryClassrooms 前台自然语言查询接口，使用普通频率限制。
-func (h *Handler) AIQueryClassrooms(c *gin.Context) {
-	h.aiQueryClassrooms(c, true)
-}
-
 // OpenQueryClassrooms 开放直接查询接口，不挂载高频限制。
 func (h *Handler) OpenQueryClassrooms(c *gin.Context) {
 	if !h.validateOpenAPIKey(c) {
@@ -81,58 +76,6 @@ func (h *Handler) OpenQueryClassrooms(c *gin.Context) {
 		return
 	}
 	h.queryClassrooms(c, false)
-}
-
-// OpenAIQueryClassrooms 开放 AI 自然语言查询接口，不挂载高频限制。
-func (h *Handler) OpenAIQueryClassrooms(c *gin.Context) {
-	if !h.validateOpenAPIKey(c) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "开放接口授权失败"})
-		return
-	}
-	h.aiQueryClassrooms(c, false)
-}
-
-func (h *Handler) aiQueryClassrooms(c *gin.Context, recordStats bool) {
-	if h.apiConfigService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI 服务未初始化"})
-		return
-	}
-
-	var req model.AIQueryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数格式错误"})
-		return
-	}
-	parsed, err := h.apiConfigService.ParseNaturalLanguage(c.Request.Context(), req.Text)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "AI 解析失败，请完善精确的描述语言，或使用直接查询接口", "detail": err.Error()})
-		return
-	}
-	if parsed.Confidence != "high" || parsed.BuildingName == "" || parsed.StartNode == "" || parsed.EndNode == "" {
-		msg := parsed.Reason
-		if msg == "" {
-			msg = "请提供明确的教学楼名称、目标日期和节次范围"
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "AI 解析失败，请完善精确的描述语言，或使用直接查询接口", "detail": msg, "parsed": parsed})
-		return
-	}
-
-	query := model.QueryRequest{
-		BuildingName: parsed.BuildingName,
-		DateOffset:   parsed.DateOffset,
-		StartNode:    parsed.StartNode,
-		EndNode:      parsed.EndNode,
-	}
-	resp, err := h.runClassroomQuery(c, query, recordStats)
-	if err != nil {
-		status := http.StatusInternalServerError
-		if _, ok := err.(errBadRequest); ok {
-			status = http.StatusBadRequest
-		}
-		c.JSON(status, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, model.AIQueryResponse{Parsed: *parsed, Result: resp})
 }
 
 func (h *Handler) queryClassrooms(c *gin.Context, recordStats bool) {
@@ -182,7 +125,7 @@ func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest, reco
 }
 
 func (h *Handler) validateOpenAPIKey(c *gin.Context) bool {
-	if h.apiConfigService == nil {
+	if h.openAPIConfigService == nil {
 		return false
 	}
 	key := strings.TrimSpace(c.GetHeader("X-API-Key"))
@@ -192,7 +135,7 @@ func (h *Handler) validateOpenAPIKey(c *gin.Context) bool {
 			key = strings.TrimSpace(auth[7:])
 		}
 	}
-	return h.apiConfigService.ValidateOpenAPIKey(key)
+	return h.openAPIConfigService.ValidateKey(key)
 }
 
 type errBadRequest string

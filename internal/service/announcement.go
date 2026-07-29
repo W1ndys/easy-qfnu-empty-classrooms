@@ -32,8 +32,8 @@ func migrateAnnouncementSchema(db *sql.DB) error {
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			important INTEGER NOT NULL DEFAULT 0,
-			created_at DATETIME DEFAULT (datetime('now', 'localtime')),
-			updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+			created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		)
 	`)
 	if err != nil {
@@ -62,6 +62,9 @@ func (s *AnnouncementService) List() ([]model.Announcement, error) {
 		var imp int
 		if err := rows.Scan(&a.ID, &a.Title, &a.Content, &imp, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("扫描公告数据失败: %w", err)
+		}
+		if err := normalizeAnnouncementTimes(&a); err != nil {
+			return nil, fmt.Errorf("解析公告时间失败: %w", err)
 		}
 		a.Important = imp != 0
 		list = append(list, a)
@@ -97,6 +100,9 @@ func (s *AnnouncementService) getByIDLocked(id int64) (*model.Announcement, erro
 	if err != nil {
 		return nil, fmt.Errorf("查询公告失败: %w", err)
 	}
+	if err := normalizeAnnouncementTimes(&a); err != nil {
+		return nil, fmt.Errorf("解析公告时间失败: %w", err)
+	}
 	a.Important = imp != 0
 	return &a, nil
 }
@@ -111,9 +117,11 @@ func (s *AnnouncementService) Create(req model.CreateAnnouncementRequest) (*mode
 		imp = 1
 	}
 
+	now := nowUTCForStorage()
 	result, err := s.db.Exec(`
-		INSERT INTO announcements (title, content, important) VALUES (?, ?, ?)
-	`, req.Title, req.Content, imp)
+		INSERT INTO announcements (title, content, important, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, req.Title, req.Content, imp, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("创建公告失败: %w", err)
 	}
@@ -138,8 +146,8 @@ func (s *AnnouncementService) Update(id int64, req model.UpdateAnnouncementReque
 
 	result, err := s.db.Exec(`
 		UPDATE announcements SET title = ?, content = ?, important = ?,
-		updated_at = datetime('now', 'localtime') WHERE id = ?
-	`, req.Title, req.Content, imp, id)
+		updated_at = ? WHERE id = ?
+	`, req.Title, req.Content, imp, nowUTCForStorage(), id)
 	if err != nil {
 		return nil, fmt.Errorf("更新公告失败: %w", err)
 	}
@@ -184,21 +192,30 @@ func (s *AnnouncementService) ListPublic() ([]model.AnnouncementPublic, error) {
 
 	var list []model.AnnouncementPublic
 	for _, a := range announcements {
-		// 提取日期部分 (created_at 格式: "2026-04-29 12:00:00")
-		date := a.CreatedAt
-		if len(date) >= 10 {
-			date = date[:10]
-		}
 		list = append(list, model.AnnouncementPublic{
-			ID:        fmt.Sprintf("announcement-%d", a.ID),
-			Date:      date,
+			ID:        a.ID,
 			Title:     a.Title,
 			Content:   a.Content,
 			Important: a.Important,
+			CreatedAt: a.CreatedAt,
 		})
 	}
 	if list == nil {
 		list = []model.AnnouncementPublic{}
 	}
 	return list, nil
+}
+
+func normalizeAnnouncementTimes(a *model.Announcement) error {
+	createdAt, err := utcTimestampForAPI(a.CreatedAt)
+	if err != nil {
+		return err
+	}
+	updatedAt, err := utcTimestampForAPI(a.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	a.CreatedAt = createdAt
+	a.UpdatedAt = updatedAt
+	return nil
 }

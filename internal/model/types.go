@@ -8,27 +8,6 @@ type QueryRequest struct {
 	DateOffset   int    `json:"date_offset"` // 日期偏移 (0=今天, 1=明天...)
 }
 
-// AIQueryRequest 自然语言查询请求
-type AIQueryRequest struct {
-	Text string `json:"text" binding:"required"` // 自然语言描述
-}
-
-// AIParsedQuery AI 解析出的查询参数
-type AIParsedQuery struct {
-	BuildingName string `json:"building"`
-	DateOffset   int    `json:"date_offset"`
-	StartNode    string `json:"start_node"`
-	EndNode      string `json:"end_node"`
-	Confidence   string `json:"confidence"`
-	Reason       string `json:"reason"`
-}
-
-// AIQueryResponse 自然语言查询响应
-type AIQueryResponse struct {
-	Parsed AIParsedQuery      `json:"parsed"`
-	Result *ClassroomResponse `json:"result"`
-}
-
 // ClassroomResponse 返回给前端的响应
 type ClassroomResponse struct {
 	Date       string   `json:"date"`        // 查询日期 (YYYY-MM-DD)
@@ -211,13 +190,13 @@ type AnnouncementListResponse struct {
 	Announcements []AnnouncementPublic `json:"announcements"`
 }
 
-// AnnouncementPublic 前台公告展示结构 (兼容前端已有字段)
+// AnnouncementPublic 前台公告展示结构。时间始终为 UTC RFC 3339。
 type AnnouncementPublic struct {
-	ID        string `json:"id"`        // 字符串 id，兼容前端已读缓存
-	Date      string `json:"date"`      // 发布日期 YYYY-MM-DD
-	Title     string `json:"title"`     // 标题
-	Content   string `json:"content"`   // 正文
-	Important bool   `json:"important"` // 是否重要
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	Important bool   `json:"important"`
+	CreatedAt string `json:"created_at"`
 }
 
 // AdminLoginRequest 管理员登录请求
@@ -231,21 +210,24 @@ type AdminLoginResponse struct {
 	Token string `json:"token"`
 }
 
-// APIConfig 管理后台 AI 与开放接口配置
-type APIConfig struct {
-	AIBaseURL          string `json:"ai_base_url"`
-	AIKey              string `json:"ai_key"`
-	AIModel            string `json:"ai_model"`
-	AIPrompt           string `json:"ai_prompt"`
-	DefaultAIPrompt    string `json:"default_ai_prompt"`
-	AIPromptOverridden bool   `json:"ai_prompt_overridden"`
-	OpenAPIEnabled     bool   `json:"open_api_enabled"`
-	OpenAPIKey         string `json:"open_api_key"`
+// OpenAPIConfig 是服务内部使用的开放接口配置，API 响应不得直接序列化该结构。
+type OpenAPIConfig struct {
+	Enabled   bool   `json:"-"`
+	APIKey    string `json:"-"`
+	UpdatedAt string `json:"-"`
 }
 
-// AIModelsResponse OpenAI 兼容模型列表响应
-type AIModelsResponse struct {
-	Models []string `json:"models"`
+// UpdateOpenAPIConfigRequest 更新开放接口配置。省略 APIKey 表示保留当前值。
+type UpdateOpenAPIConfigRequest struct {
+	Enabled bool    `json:"enabled"`
+	APIKey  *string `json:"api_key"`
+}
+
+// OpenAPIConfigResponse 返回不包含明文 Key 的开放接口配置。
+type OpenAPIConfigResponse struct {
+	Enabled   bool   `json:"enabled"`
+	HasAPIKey bool   `json:"has_api_key"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // FullDayStatusResponse 全天状态查询响应
