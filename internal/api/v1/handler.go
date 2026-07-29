@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/W1ndys/easy-qfnu-kjs/internal/model"
 	"github.com/W1ndys/easy-qfnu-kjs/internal/service"
@@ -14,13 +13,12 @@ import (
 )
 
 type Handler struct {
-	classroomService     *service.ClassroomService
-	statsService         *service.StatsService
-	openAPIConfigService *service.OpenAPIConfigService
+	classroomService *service.ClassroomService
+	statsService     *service.StatsService
 }
 
-func NewHandler(cs *service.ClassroomService, ss *service.StatsService, oacs *service.OpenAPIConfigService) *Handler {
-	return &Handler{classroomService: cs, statsService: ss, openAPIConfigService: oacs}
+func NewHandler(cs *service.ClassroomService, ss *service.StatsService) *Handler {
+	return &Handler{classroomService: cs, statsService: ss}
 }
 
 // hashUA 对 User-Agent 做 SHA256 并返回前 16 个十六进制字符 (与 middleware.RateLimiter 的哈希策略一致)
@@ -66,26 +64,17 @@ func (h *Handler) GetStatus(c *gin.Context) {
 }
 
 func (h *Handler) QueryClassrooms(c *gin.Context) {
-	h.queryClassrooms(c, true)
+	h.queryClassrooms(c)
 }
 
-// OpenQueryClassrooms 开放直接查询接口，不挂载高频限制。
-func (h *Handler) OpenQueryClassrooms(c *gin.Context) {
-	if !h.validateOpenAPIKey(c) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "开放接口授权失败"})
-		return
-	}
-	h.queryClassrooms(c, false)
-}
-
-func (h *Handler) queryClassrooms(c *gin.Context, recordStats bool) {
+func (h *Handler) queryClassrooms(c *gin.Context) {
 	var req model.QueryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数格式错误"})
 		return
 	}
 
-	resp, err := h.runClassroomQuery(c, req, recordStats)
+	resp, err := h.runClassroomQuery(c, req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if _, ok := err.(errBadRequest); ok {
@@ -97,7 +86,7 @@ func (h *Handler) queryClassrooms(c *gin.Context, recordStats bool) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest, recordStats bool) (*model.ClassroomResponse, error) {
+func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest) (*model.ClassroomResponse, error) {
 	if req.BuildingName == "" {
 		return nil, errBadRequest("请输入教学楼名称")
 	}
@@ -109,7 +98,7 @@ func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest, reco
 	if err != nil {
 		return nil, err
 	}
-	if recordStats && h.statsService != nil {
+	if h.statsService != nil {
 		resultCount := len(resp.Classrooms)
 		go h.statsService.RecordQuery(model.QueryRecord{
 			Keyword:     req.BuildingName,
@@ -122,20 +111,6 @@ func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest, reco
 		})
 	}
 	return resp, nil
-}
-
-func (h *Handler) validateOpenAPIKey(c *gin.Context) bool {
-	if h.openAPIConfigService == nil {
-		return false
-	}
-	key := strings.TrimSpace(c.GetHeader("X-API-Key"))
-	if key == "" {
-		auth := strings.TrimSpace(c.GetHeader("Authorization"))
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			key = strings.TrimSpace(auth[7:])
-		}
-	}
-	return h.openAPIConfigService.ValidateKey(key)
 }
 
 type errBadRequest string

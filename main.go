@@ -89,19 +89,12 @@ func main() {
 
 	// 初始化公告服务（复用 StatsService 的 SQLite 连接，生命周期由 StatsService 管理）
 	var announcementService *service.AnnouncementService
-	var openAPIConfigService *service.OpenAPIConfigService
 	if statsService != nil {
 		as, err := service.NewAnnouncementService(statsService.DB())
 		if err != nil {
 			logger.Warn("初始化公告服务失败：%v。公告功能将不可用。", err)
 		} else {
 			announcementService = as
-		}
-		acs, err := service.NewOpenAPIConfigService(statsService.DB())
-		if err != nil {
-			logger.Warn("初始化开放接口配置服务失败：%v。开放接口功能将不可用。", err)
-		} else {
-			openAPIConfigService = acs
 		}
 	}
 
@@ -130,10 +123,10 @@ func main() {
 
 	var adminHandler *v1.AdminHandler
 	if announcementService != nil && adminUser != "" && adminPass != "" {
-		adminHandler = v1.NewAdminHandler(announcementService, openAPIConfigService, jwtManager, adminUser, adminPass)
+		adminHandler = v1.NewAdminHandler(announcementService, jwtManager, adminUser, adminPass)
 	}
 
-	apiHandler := v1.NewHandler(classroomService, statsService, openAPIConfigService)
+	apiHandler := v1.NewHandler(classroomService, statsService)
 
 	// 3. 设置 Gin
 	r := gin.Default()
@@ -151,7 +144,6 @@ func main() {
 		api.GET("/status", apiHandler.GetStatus)
 		api.POST("/query", searchRateLimiter.Middleware(), apiHandler.QueryClassrooms)
 		api.POST("/query-full-day", searchRateLimiter.Middleware(), apiHandler.QueryFullDayStatus)
-		api.POST("/open/query", apiHandler.OpenQueryClassrooms)
 		api.GET("/stats", apiHandler.GetStats)
 		api.GET("/top-buildings", apiHandler.GetTopBuildings)
 		api.GET("/dashboard", apiHandler.GetDashboard)
@@ -173,8 +165,6 @@ func main() {
 			admin.POST("/announcements", adminHandler.CreateAnnouncement)
 			admin.PUT("/announcements/:id", adminHandler.UpdateAnnouncement)
 			admin.DELETE("/announcements/:id", adminHandler.DeleteAnnouncement)
-			admin.GET("/open-api-config", adminHandler.GetOpenAPIConfig)
-			admin.PUT("/open-api-config", adminHandler.UpdateOpenAPIConfig)
 		}
 	}
 

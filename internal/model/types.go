@@ -210,26 +210,6 @@ type AdminLoginResponse struct {
 	Token string `json:"token"`
 }
 
-// OpenAPIConfig 是服务内部使用的开放接口配置，API 响应不得直接序列化该结构。
-type OpenAPIConfig struct {
-	Enabled   bool   `json:"-"`
-	APIKey    string `json:"-"`
-	UpdatedAt string `json:"-"`
-}
-
-// UpdateOpenAPIConfigRequest 更新开放接口配置。省略 APIKey 表示保留当前值。
-type UpdateOpenAPIConfigRequest struct {
-	Enabled bool    `json:"enabled"`
-	APIKey  *string `json:"api_key"`
-}
-
-// OpenAPIConfigResponse 返回不包含明文 Key 的开放接口配置。
-type OpenAPIConfigResponse struct {
-	Enabled   bool   `json:"enabled"`
-	HasAPIKey bool   `json:"has_api_key"`
-	UpdatedAt string `json:"updated_at"`
-}
-
 // FullDayStatusResponse 全天状态查询响应
 type FullDayStatusResponse struct {
 	Date        string                `json:"date"`         // 查询日期 (YYYY-MM-DD)

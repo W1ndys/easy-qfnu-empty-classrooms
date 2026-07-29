@@ -104,6 +104,10 @@ func verifyWritable(dir string) error {
 
 // migrateSchema 检测并迁移表结构
 func migrateSchema(db *sql.DB) error {
+	if err := dropRemovedConfigTables(db); err != nil {
+		return err
+	}
+
 	// 检测表是否存在
 	var tableExists int
 	err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='query_logs'").Scan(&tableExists)
@@ -136,6 +140,16 @@ func migrateSchema(db *sql.DB) error {
 
 	// 新表结构，检查索引
 	return createIndexesIfNotExist(db)
+}
+
+func dropRemovedConfigTables(db *sql.DB) error {
+	if _, err := db.Exec("DROP TABLE IF EXISTS api_config"); err != nil {
+		return fmt.Errorf("删除废弃配置表 api_config 失败: %w", err)
+	}
+	if _, err := db.Exec("DROP TABLE IF EXISTS open_api_config"); err != nil {
+		return fmt.Errorf("删除废弃配置表 open_api_config 失败: %w", err)
+	}
+	return nil
 }
 
 // createNewTable 创建新的表结构
