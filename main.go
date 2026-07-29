@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"time"
 
 	v1 "github.com/W1ndys/easy-qfnu-kjs/internal/api/v1"
+	"github.com/W1ndys/easy-qfnu-kjs/internal/database"
 	"github.com/W1ndys/easy-qfnu-kjs/internal/middleware"
 	"github.com/W1ndys/easy-qfnu-kjs/internal/service"
 	"github.com/W1ndys/easy-qfnu-kjs/pkg/cas"
@@ -73,30 +75,25 @@ func main() {
 
 	classroomService := service.NewClassroomService(client)
 
-	// 初始化统计服务
-	statsDBPath := os.Getenv("STATS_DB_PATH")
-	if statsDBPath == "" {
-		statsDBPath = "data/stats.db"
-	}
-
-	statsService, err := service.NewStatsService(statsDBPath)
+	// PostgreSQL 是统计和公告服务的共享数据层，DATABASE_URL 为必需配置。
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	dbContext, cancelDB := context.WithTimeout(context.Background(), 15*time.Second)
+	db, err := database.Open(dbContext, databaseURL)
+	cancelDB()
 	if err != nil {
-		logger.Warn("初始化统计服务失败：%v。统计功能将不可用。", err)
+		logger.Fatal("初始化 PostgreSQL 失败：%v", err)
 	}
-	if statsService != nil {
-		defer statsService.Close()
-	}
+	defer db.Close()
 
-	// 初始化公告服务（复用 StatsService 的 SQLite 连接，生命周期由 StatsService 管理）
-	var announcementService *service.AnnouncementService
-	if statsService != nil {
-		as, err := service.NewAnnouncementService(statsService.DB())
-		if err != nil {
-			logger.Warn("初始化公告服务失败：%v。公告功能将不可用。", err)
-		} else {
-			announcementService = as
-		}
+	migrationContext, cancelMigration := context.WithTimeout(context.Background(), 1*time.Minute)
+	if err := database.Migrate(migrationContext, db); err != nil {
+		cancelMigration()
+		logger.Fatal("执行 PostgreSQL 迁移失败：%v", err)
 	}
+	cancelMigration()
+
+	statsService := service.NewStatsService(db)
+	announcementService := service.NewAnnouncementService(db)
 
 	// 初始化 JWT 管理器
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -121,10 +118,8 @@ func main() {
 		logger.Warn("未设置 ADMIN_USERNAME/ADMIN_PASSWORD，管理后台将不可用。")
 	}
 
-	var adminHandler *v1.AdminHandler
-	if announcementService != nil && adminUser != "" && adminPass != "" {
-		adminHandler = v1.NewAdminHandler(announcementService, jwtManager, adminUser, adminPass)
-	}
+	adminEnabled := adminUser != "" && adminPass != ""
+	adminHandler := v1.NewAdminHandler(announcementService, jwtManager, adminUser, adminPass)
 
 	apiHandler := v1.NewHandler(classroomService, statsService)
 
@@ -148,14 +143,11 @@ func main() {
 		api.GET("/top-buildings", apiHandler.GetTopBuildings)
 		api.GET("/dashboard", apiHandler.GetDashboard)
 
-		// 前台公告公开接口
-		if adminHandler != nil {
-			api.GET("/announcements", adminHandler.GetPublicAnnouncements)
-		}
+		api.GET("/announcements", adminHandler.GetPublicAnnouncements)
 	}
 
 	// 管理后台 API
-	if adminHandler != nil {
+	if adminEnabled {
 		api.POST("/admin/login", adminHandler.Login)
 
 		admin := api.Group("/admin")

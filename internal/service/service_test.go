@@ -1,24 +1,34 @@
 package service
 
 import (
-	"database/sql"
-	"path/filepath"
-	"strings"
+	"database/sql/driver"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/W1ndys/easy-qfnu-kjs/internal/model"
-	_ "modernc.org/sqlite"
 )
 
-func TestAnnouncementTimesStoredAndReturnedAsUTC(t *testing.T) {
-	db := openMemoryDB(t)
-	service, err := NewAnnouncementService(db)
+func TestAnnouncementCreateReturnsUTCTimes(t *testing.T) {
+	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatalf("初始化公告服务失败: %v", err)
+		t.Fatalf("创建 mock 数据库失败: %v", err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
 
-	announcement, err := service.Create(model.CreateAnnouncementRequest{
+	storedLocation := time.FixedZone("UTC+8", 8*60*60)
+	storedCreatedAt := time.Date(2026, 7, 29, 16, 0, 0, 0, storedLocation)
+	storedUpdatedAt := storedCreatedAt.Add(time.Minute)
+	mock.ExpectQuery(`INSERT INTO announcements`).
+		WithArgs("测试公告", "内容", true, utcTimeArgument{}).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
+	mock.ExpectQuery(`SELECT id, title, content, important, created_at, updated_at`).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "title", "content", "important", "created_at", "updated_at",
+		}).AddRow(7, "测试公告", "内容", true, storedCreatedAt, storedUpdatedAt))
+
+	announcement, err := NewAnnouncementService(db).Create(model.CreateAnnouncementRequest{
 		Title:     "测试公告",
 		Content:   "内容",
 		Important: true,
@@ -26,85 +36,50 @@ func TestAnnouncementTimesStoredAndReturnedAsUTC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建公告失败: %v", err)
 	}
-	requireUTCTimestamp(t, announcement.CreatedAt)
-	requireUTCTimestamp(t, announcement.UpdatedAt)
-
-	var storedCreatedAt, storedUpdatedAt string
-	if err := db.QueryRow(`
-		SELECT created_at, updated_at FROM announcements WHERE id = ?
-	`, announcement.ID).Scan(&storedCreatedAt, &storedUpdatedAt); err != nil {
-		t.Fatalf("读取公告存储时间失败: %v", err)
+	if announcement.CreatedAt.Location() != time.UTC || announcement.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("公告时间未转换为 UTC: %+v", announcement)
 	}
-	requireUTCTimestamp(t, storedCreatedAt)
-	requireUTCTimestamp(t, storedUpdatedAt)
-
-	publicList, err := service.ListPublic()
-	if err != nil {
-		t.Fatalf("读取公开公告失败: %v", err)
-	}
-	if len(publicList) != 1 || publicList[0].CreatedAt != announcement.CreatedAt {
-		t.Fatalf("公开公告 UTC 时间不正确: %+v", publicList)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("SQL 调用不符合预期: %v", err)
 	}
 }
 
-func TestQueryLogTimeStoredAsUTC(t *testing.T) {
-	service, err := NewStatsService(filepath.Join(t.TempDir(), "stats.db"))
+func TestRecordQueryWritesUTCTime(t *testing.T) {
+	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatalf("初始化统计服务失败: %v", err)
+		t.Fatalf("创建 mock 数据库失败: %v", err)
 	}
-	t.Cleanup(func() { _ = service.Close() })
-
-	service.RecordQuery(model.QueryRecord{Keyword: "老文史楼"})
-	var queriedAt string
-	if err := service.DB().QueryRow(`SELECT queried_at FROM query_logs LIMIT 1`).Scan(&queriedAt); err != nil {
-		t.Fatalf("读取查询日志时间失败: %v", err)
-	}
-	requireUTCTimestamp(t, queriedAt)
-}
-
-func TestRemovedConfigTablesAreDropped(t *testing.T) {
-	db := openMemoryDB(t)
-	if _, err := db.Exec(`
-		CREATE TABLE api_config (id INTEGER PRIMARY KEY);
-		CREATE TABLE open_api_config (id INTEGER PRIMARY KEY);
-	`); err != nil {
-		t.Fatalf("创建废弃配置表失败: %v", err)
-	}
-	if err := migrateSchema(db); err != nil {
-		t.Fatalf("迁移数据库失败: %v", err)
-	}
-
-	var tableCount int
-	if err := db.QueryRow(`
-		SELECT COUNT(*) FROM sqlite_master
-		WHERE type = 'table' AND name IN ('api_config', 'open_api_config')
-	`).Scan(&tableCount); err != nil {
-		t.Fatalf("检查废弃配置表失败: %v", err)
-	}
-	if tableCount != 0 {
-		t.Fatal("废弃配置表未删除")
-	}
-}
-
-func openMemoryDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("打开测试数据库失败: %v", err)
-	}
-	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	return db
+	mock.ExpectExec(`INSERT INTO query_logs`).
+		WithArgs("老文史楼", 0, "01", "02", 3, "127.0.0.1", "ua", utcTimeArgument{}).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	NewStatsService(db).RecordQuery(model.QueryRecord{
+		Keyword:     "老文史楼",
+		StartNode:   "01",
+		EndNode:     "02",
+		ResultCount: 3,
+		IP:          "127.0.0.1",
+		UAHash:      "ua",
+	})
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("SQL 调用不符合预期: %v", err)
+	}
 }
 
-func requireUTCTimestamp(t *testing.T, value string) time.Time {
-	t.Helper()
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		t.Fatalf("时间 %q 不是 RFC 3339: %v", value, err)
+func TestStartOfDayUsesClientTimezone(t *testing.T) {
+	location := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, 7, 29, 20, 30, 0, 0, location)
+	start := startOfDay(now, location)
+	want := time.Date(2026, 7, 28, 16, 0, 0, 0, time.UTC)
+	if !start.Equal(want) {
+		t.Fatalf("日期边界错误: got=%s want=%s", start, want)
 	}
-	if !strings.HasSuffix(value, "Z") || parsed.Location() != time.UTC {
-		t.Fatalf("时间 %q 不是 UTC", value)
-	}
-	return parsed
+}
+
+type utcTimeArgument struct{}
+
+func (utcTimeArgument) Match(value driver.Value) bool {
+	timestamp, ok := value.(time.Time)
+	return ok && timestamp.Location() == time.UTC
 }

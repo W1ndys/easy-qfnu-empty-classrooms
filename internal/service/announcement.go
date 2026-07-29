@@ -3,50 +3,24 @@ package service
 import (
 	"database/sql"
 	"fmt"
-	"sync"
+	"time"
 
 	"github.com/W1ndys/easy-qfnu-kjs/internal/model"
 	"github.com/W1ndys/easy-qfnu-kjs/pkg/logger"
 )
 
-// AnnouncementService 公告管理服务
+// AnnouncementService 管理 PostgreSQL 中的公告数据。
 type AnnouncementService struct {
 	db *sql.DB
-	mu sync.RWMutex
 }
 
-// NewAnnouncementService 创建公告服务，复用已有的 SQLite 数据库连接
-func NewAnnouncementService(db *sql.DB) (*AnnouncementService, error) {
-	if err := migrateAnnouncementSchema(db); err != nil {
-		return nil, fmt.Errorf("公告表迁移失败: %w", err)
-	}
+func NewAnnouncementService(db *sql.DB) *AnnouncementService {
 	logger.Info("公告服务已初始化")
-	return &AnnouncementService{db: db}, nil
+	return &AnnouncementService{db: db}
 }
 
-// migrateAnnouncementSchema 创建公告表（如果不存在）
-func migrateAnnouncementSchema(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS announcements (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			important INTEGER NOT NULL DEFAULT 0,
-			created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("创建 announcements 表失败: %w", err)
-	}
-	return nil
-}
-
-// List 获取所有公告（按创建时间倒序）
+// List 获取所有公告（按创建时间倒序）。
 func (s *AnnouncementService) List() ([]model.Announcement, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	rows, err := s.db.Query(`
 		SELECT id, title, content, important, created_at, updated_at
 		FROM announcements ORDER BY created_at DESC
@@ -56,102 +30,76 @@ func (s *AnnouncementService) List() ([]model.Announcement, error) {
 	}
 	defer rows.Close()
 
-	var list []model.Announcement
+	list := make([]model.Announcement, 0)
 	for rows.Next() {
-		var a model.Announcement
-		var imp int
-		if err := rows.Scan(&a.ID, &a.Title, &a.Content, &imp, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var announcement model.Announcement
+		if err := rows.Scan(
+			&announcement.ID,
+			&announcement.Title,
+			&announcement.Content,
+			&announcement.Important,
+			&announcement.CreatedAt,
+			&announcement.UpdatedAt,
+		); err != nil {
 			return nil, fmt.Errorf("扫描公告数据失败: %w", err)
 		}
-		if err := normalizeAnnouncementTimes(&a); err != nil {
-			return nil, fmt.Errorf("解析公告时间失败: %w", err)
-		}
-		a.Important = imp != 0
-		list = append(list, a)
+		normalizeAnnouncementTimes(&announcement)
+		list = append(list, announcement)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("遍历公告结果失败: %w", err)
 	}
-	if list == nil {
-		list = []model.Announcement{}
-	}
 	return list, nil
 }
 
-// GetByID 根据 ID 获取单条公告
+// GetByID 根据 ID 获取单条公告。
 func (s *AnnouncementService) GetByID(id int64) (*model.Announcement, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.getByIDLocked(id)
-}
-
-// getByIDLocked 内部方法，调用方需自行持有锁
-func (s *AnnouncementService) getByIDLocked(id int64) (*model.Announcement, error) {
-	var a model.Announcement
-	var imp int
+	var announcement model.Announcement
 	err := s.db.QueryRow(`
 		SELECT id, title, content, important, created_at, updated_at
-		FROM announcements WHERE id = ?
-	`, id).Scan(&a.ID, &a.Title, &a.Content, &imp, &a.CreatedAt, &a.UpdatedAt)
+		FROM announcements WHERE id = $1
+	`, id).Scan(
+		&announcement.ID,
+		&announcement.Title,
+		&announcement.Content,
+		&announcement.Important,
+		&announcement.CreatedAt,
+		&announcement.UpdatedAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询公告失败: %w", err)
 	}
-	if err := normalizeAnnouncementTimes(&a); err != nil {
-		return nil, fmt.Errorf("解析公告时间失败: %w", err)
-	}
-	a.Important = imp != 0
-	return &a, nil
+	normalizeAnnouncementTimes(&announcement)
+	return &announcement, nil
 }
 
-// Create 创建公告
+// Create 创建公告，所有时间以 UTC 写入 PostgreSQL TIMESTAMPTZ。
 func (s *AnnouncementService) Create(req model.CreateAnnouncementRequest) (*model.Announcement, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	imp := 0
-	if req.Important {
-		imp = 1
-	}
-
-	now := nowUTCForStorage()
-	result, err := s.db.Exec(`
+	now := time.Now().UTC()
+	var id int64
+	if err := s.db.QueryRow(`
 		INSERT INTO announcements (title, content, important, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, req.Title, req.Content, imp, now, now)
-	if err != nil {
+		VALUES ($1, $2, $3, $4, $4)
+		RETURNING id
+	`, req.Title, req.Content, req.Important, now).Scan(&id); err != nil {
 		return nil, fmt.Errorf("创建公告失败: %w", err)
 	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("获取公告 ID 失败: %w", err)
-	}
-
-	return s.getByIDLocked(id)
+	return s.GetByID(id)
 }
 
-// Update 更新公告
+// Update 更新公告。
 func (s *AnnouncementService) Update(id int64, req model.UpdateAnnouncementRequest) (*model.Announcement, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	imp := 0
-	if req.Important {
-		imp = 1
-	}
-
 	result, err := s.db.Exec(`
-		UPDATE announcements SET title = ?, content = ?, important = ?,
-		updated_at = ? WHERE id = ?
-	`, req.Title, req.Content, imp, nowUTCForStorage(), id)
+		UPDATE announcements
+		SET title = $1, content = $2, important = $3, updated_at = $4
+		WHERE id = $5
+	`, req.Title, req.Content, req.Important, time.Now().UTC(), id)
 	if err != nil {
 		return nil, fmt.Errorf("更新公告失败: %w", err)
 	}
-
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return nil, fmt.Errorf("获取影响行数失败: %w", err)
@@ -159,20 +107,15 @@ func (s *AnnouncementService) Update(id int64, req model.UpdateAnnouncementReque
 	if affected == 0 {
 		return nil, nil
 	}
-
-	return s.getByIDLocked(id)
+	return s.GetByID(id)
 }
 
-// Delete 删除公告
+// Delete 删除公告。
 func (s *AnnouncementService) Delete(id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	result, err := s.db.Exec("DELETE FROM announcements WHERE id = ?", id)
+	result, err := s.db.Exec(`DELETE FROM announcements WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("删除公告失败: %w", err)
 	}
-
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("获取影响行数失败: %w", err)
@@ -183,39 +126,27 @@ func (s *AnnouncementService) Delete(id int64) error {
 	return nil
 }
 
-// ListPublic 获取前台展示用的公告列表
+// ListPublic 获取前台展示用的公告列表。
 func (s *AnnouncementService) ListPublic() ([]model.AnnouncementPublic, error) {
 	announcements, err := s.List()
 	if err != nil {
 		return nil, err
 	}
 
-	var list []model.AnnouncementPublic
-	for _, a := range announcements {
+	list := make([]model.AnnouncementPublic, 0, len(announcements))
+	for _, announcement := range announcements {
 		list = append(list, model.AnnouncementPublic{
-			ID:        a.ID,
-			Title:     a.Title,
-			Content:   a.Content,
-			Important: a.Important,
-			CreatedAt: a.CreatedAt,
+			ID:        announcement.ID,
+			Title:     announcement.Title,
+			Content:   announcement.Content,
+			Important: announcement.Important,
+			CreatedAt: announcement.CreatedAt,
 		})
-	}
-	if list == nil {
-		list = []model.AnnouncementPublic{}
 	}
 	return list, nil
 }
 
-func normalizeAnnouncementTimes(a *model.Announcement) error {
-	createdAt, err := utcTimestampForAPI(a.CreatedAt)
-	if err != nil {
-		return err
-	}
-	updatedAt, err := utcTimestampForAPI(a.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	a.CreatedAt = createdAt
-	a.UpdatedAt = updatedAt
-	return nil
+func normalizeAnnouncementTimes(announcement *model.Announcement) {
+	announcement.CreatedAt = announcement.CreatedAt.UTC()
+	announcement.UpdatedAt = announcement.UpdatedAt.UTC()
 }

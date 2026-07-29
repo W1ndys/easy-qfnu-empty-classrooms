@@ -1,29 +1,23 @@
 services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    image: easy-qfnu-kjs-frontend:latest
-    container_name: easy-qfnu-kjs-frontend
+  postgres:
+    image: postgres:17-alpine
+    container_name: easy-qfnu-kjs-postgres
     restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-easy_qfnu_kjs}
+      POSTGRES_USER: ${POSTGRES_USER:-easy_qfnu_kjs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     networks:
-      - traefik-public
       - easy-qfnu-kjs-net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=traefik-public"
-      - "traefik.http.routers.easy-qfnu-kjs.rule=Host(`kjs.easy-qfnu.top`)"
-      - "traefik.http.routers.easy-qfnu-kjs.entrypoints=websecure"
-      - "traefik.http.routers.easy-qfnu-kjs.tls.certresolver=leresolver"
-      - "traefik.http.services.easy-qfnu-kjs.loadbalancer.server.port=80"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1/index.html"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-easy_qfnu_kjs} -d ${POSTGRES_DB:-easy_qfnu_kjs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
       start_period: 10s
 
   backend:
@@ -34,15 +28,20 @@ services:
     container_name: easy-qfnu-kjs-backend
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       PORT: 8080
       GIN_MODE: release
-      STATS_DB_PATH: /app/data/stats.db
+      DATABASE_URL: postgres://${POSTGRES_USER:-easy_qfnu_kjs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-easy_qfnu_kjs}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     networks:
       - easy-qfnu-kjs-net
     volumes:
-      - ./data:/app/data
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/status"]
@@ -51,8 +50,9 @@ services:
       retries: 3
       start_period: 20s
 
+volumes:
+  postgres-data:
+
 networks:
-  traefik-public:
-    external: true
   easy-qfnu-kjs-net:
     driver: bridge

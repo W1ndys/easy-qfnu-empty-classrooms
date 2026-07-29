@@ -40,23 +40,18 @@ SSH_OPTS=(
   -o StrictHostKeyChecking=accept-new
 )
 
-IMAGE_FRONTEND="easy-qfnu-kjs-frontend"
 IMAGE_BACKEND="easy-qfnu-kjs-backend"
 TAR_FILE="easy-qfnu-kjs-images.tar"
 LOCAL_TAR="/tmp/${TAR_FILE}"
 
 # ---------- 本地构建镜像 ----------
-log "building frontend image locally"
-docker build -t "${IMAGE_FRONTEND}:latest" -f "${ROOT_DIR}/frontend/Dockerfile" "${ROOT_DIR}/frontend" \
-  || fail "frontend image build failed"
-
 log "building backend image locally"
 docker build -t "${IMAGE_BACKEND}:latest" -f "${ROOT_DIR}/Dockerfile" "${ROOT_DIR}" \
   || fail "backend image build failed"
 
 # ---------- 导出镜像为 tar ----------
 log "saving images to ${LOCAL_TAR}"
-docker save -o "${LOCAL_TAR}" "${IMAGE_FRONTEND}:latest" "${IMAGE_BACKEND}:latest" \
+docker save -o "${LOCAL_TAR}" "${IMAGE_BACKEND}:latest" \
   || fail "docker save failed"
 
 # ---------- 同步配置文件到远端 ----------
@@ -87,11 +82,56 @@ rsync -az --progress -e "ssh -p ${PORT} -o BatchMode=yes -o StrictHostKeyCheckin
 run_remote "stopping containers" "docker compose down || true"
 
 run_remote "removing old images" \
-  "docker rmi ${IMAGE_FRONTEND}:latest ${IMAGE_BACKEND}:latest 2>/dev/null || true"
+  "docker rmi ${IMAGE_BACKEND}:latest 2>/dev/null || true"
 
 run_remote "loading new images" "docker load -i '${TAR_FILE}'"
 
-run_remote "starting containers" "docker compose up -d"
+run_remote "starting PostgreSQL" "docker compose up -d postgres"
+
+# ---------- 首次 PostgreSQL 部署：自动导入旧 SQLite ----------
+log "checking whether legacy SQLite migration is required"
+ssh "${SSH_OPTS[@]}" "${REMOTE}" 'bash -s' -- "${DIR}" <<'EOF' || fail "legacy SQLite migration failed"
+set -euo pipefail
+
+DIR="$1"
+cd "$DIR"
+
+deadline=$((SECONDS + 90))
+until docker compose exec -T postgres pg_isready >/dev/null 2>&1; do
+  if [ $SECONDS -ge $deadline ]; then
+    printf '[remote] ERROR: PostgreSQL did not become ready\n' >&2
+    docker compose logs --tail=100 postgres >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+
+legacy_db="data/stats.db"
+migration_marker="data/.sqlite-to-postgresql-migrated"
+if [ -f "$legacy_db" ] && [ ! -f "$migration_marker" ]; then
+  printf '[remote] backing up legacy SQLite files\n'
+  cp -a "$legacy_db" "${legacy_db}.pre-postgresql"
+  if [ -f "${legacy_db}-wal" ]; then
+    cp -a "${legacy_db}-wal" "${legacy_db}-wal.pre-postgresql"
+  fi
+  if [ -f "${legacy_db}-shm" ]; then
+    cp -a "${legacy_db}-shm" "${legacy_db}-shm.pre-postgresql"
+  fi
+
+  printf '[remote] migrating legacy SQLite data to PostgreSQL\n'
+  docker compose run --rm \
+    -v "$DIR/data:/legacy:ro" \
+    backend \
+    /app/migrate-sqlite-to-postgres \
+    -sqlite /legacy/stats.db
+  date -u '+%Y-%m-%dT%H:%M:%SZ' > "$migration_marker"
+  printf '[remote] legacy migration completed\n'
+else
+  printf '[remote] no pending legacy SQLite migration\n'
+fi
+
+docker compose up -d backend
+EOF
 
 run_remote "cleaning up image tar" "rm -f '${TAR_FILE}'"
 

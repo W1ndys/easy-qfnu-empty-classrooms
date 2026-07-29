@@ -20,7 +20,7 @@ tasks:
         printf "  task install         安装本地依赖\n"
         printf "  task up              启动 Docker 服务\n"
         printf "  task backend-dev     启动后端开发服务\n"
-        printf "  task frontend-dev    启动前端开发服务\n"
+        printf "  task migrate-sqlite  将旧 SQLite 数据迁移到 PostgreSQL\n"
         printf "\n运维命令:\n"
         printf "  task deploy          一键部署 (默认: HOST=n100 PORT=22 USER=root DIR=/opt/easy-qfnu-kjs)\n"
         printf "  task deploy HOST=1.2.3.4 PORT=22 USER=root DIR=/srv/app   覆盖默认参数\n"
@@ -40,26 +40,19 @@ tasks:
     desc: 安装本地开发依赖
     cmds:
       - task: install-go
-      - task: install-frontend
 
   install-go:
     desc: 安装 Go 依赖
     cmds:
       - go mod download
 
-  install-frontend:
-    desc: 安装前端依赖
-    dir: frontend
-    cmds:
-      - npm install
-
   build:
-    desc: 构建前后端 Docker 镜像
+    desc: 构建后端 Docker 镜像
     cmds:
       - '{{.COMPOSE}} build'
 
   up:
-    desc: 构建并启动前后端容器
+    desc: 构建并启动 PostgreSQL 与后端容器
     cmds:
       - '{{.COMPOSE}} up -d --build'
 
@@ -83,16 +76,23 @@ tasks:
     cmds:
       - '{{.COMPOSE}} restart'
 
-  frontend-dev:
-    desc: 启动前端本地开发服务器
-    dir: frontend
-    cmds:
-      - npm run dev
-
   backend-dev:
     desc: 启动后端本地开发服务
     cmds:
       - go run .
+
+  migrate-sqlite:
+    desc: 将旧 SQLite 查询日志和公告迁移到 PostgreSQL
+    vars:
+      SQLITE_PATH: '{{default "data/stats.db" .SQLITE_PATH}}'
+      QUERY_LOG_TIMEZONE: '{{default "UTC" .QUERY_LOG_TIMEZONE}}'
+      ANNOUNCEMENT_TIMEZONE: '{{default "UTC" .ANNOUNCEMENT_TIMEZONE}}'
+    cmds:
+      - >-
+        go run ./cmd/migrate-sqlite-to-postgres
+        -sqlite '{{.SQLITE_PATH}}'
+        -query-log-timezone '{{.QUERY_LOG_TIMEZONE}}'
+        -announcement-timezone '{{.ANNOUNCEMENT_TIMEZONE}}'
 
   deploy:
     desc: 本地构建镜像并上传到远端服务器部署

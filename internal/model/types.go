@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // QueryRequest 前端查询请求参数
 type QueryRequest struct {
 	BuildingName string `json:"building"`    // 教学楼名称 (如 "老文史楼")
@@ -163,12 +165,12 @@ type HourlyDistItem struct {
 
 // Announcement 公告数据模型
 type Announcement struct {
-	ID        int64  `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	Important bool   `json:"important"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Important bool      `json:"important"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CreateAnnouncementRequest 创建公告请求
@@ -192,11 +194,11 @@ type AnnouncementListResponse struct {
 
 // AnnouncementPublic 前台公告展示结构。时间始终为 UTC RFC 3339。
 type AnnouncementPublic struct {
-	ID        int64  `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	Important bool   `json:"important"`
-	CreatedAt string `json:"created_at"`
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Important bool      `json:"important"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // AdminLoginRequest 管理员登录请求

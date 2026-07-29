@@ -3,716 +3,409 @@ package service
 import (
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/W1ndys/easy-qfnu-kjs/internal/model"
 	"github.com/W1ndys/easy-qfnu-kjs/pkg/logger"
-
-	_ "modernc.org/sqlite"
 )
 
-// StatsService 查询统计服务
+// StatsService 管理 PostgreSQL 中的查询统计数据。
 type StatsService struct {
 	db *sql.DB
-	mu sync.Mutex // 保护 SQLite 串行写入
 }
 
-// NewStatsService 创建统计服务，打开或创建 SQLite 数据库
-func NewStatsService(dbPath string) (*StatsService, error) {
-	absPath, err := filepath.Abs(dbPath)
-	if err == nil {
-		dbPath = absPath
-	}
-
-	// 确保目录存在
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("创建数据目录失败: %w", err)
-	}
-
-	if err := verifyWritable(dir); err != nil {
-		return nil, fmt.Errorf("数据目录不可写: %w", err)
-	}
-
-	logger.Info("统计服务启动检查: db=%s dir=%s", dbPath, dir)
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("打开数据库失败: %w", err)
-	}
-
-	// 关键配置：启用 WAL 模式，允许读写并发
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("设置 WAL 模式失败: %w", err)
-	}
-
-	// 设置 busy_timeout，当数据库被锁时等待 5 秒而非立即报错
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("设置 busy_timeout 失败: %w", err)
-	}
-
-	// 连接池配置：SQLite 在 WAL 模式下支持"多读单写"，写入冲突由 busy_timeout 处理。
-	// 不能将 MaxOpenConns 设为 1：GetDashboardData 内部用 6 个 goroutine 并发查询，
-	// 单连接会导致 goroutine 互相等连接 + 主协程 wg.Wait() 永久阻塞，整个连接池死锁。
-	// 应用层各 Service 的 mu sync.Mutex 已经为同一服务内的写入提供串行化。
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(0)
-
-	// 执行迁移
-	if err := migrateSchema(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("数据库迁移失败: %w", err)
-	}
-
-	logger.Info("统计服务已初始化，数据库路径: %s", dbPath)
-	return &StatsService{db: db}, nil
+func NewStatsService(db *sql.DB) *StatsService {
+	logger.Info("统计服务已初始化")
+	return &StatsService{db: db}
 }
 
-func verifyWritable(dir string) error {
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("读取目录信息失败: %w", err)
-	}
-
-	if !info.IsDir() {
-		return fmt.Errorf("%s 不是目录", dir)
-	}
-
-	testFile, err := os.CreateTemp(dir, ".write-check-*")
-	if err != nil {
-		return fmt.Errorf("目录=%s mode=%s, 创建临时文件失败: %w", dir, info.Mode().Perm(), err)
-	}
-
-	fileName := testFile.Name()
-	if closeErr := testFile.Close(); closeErr != nil {
-		logger.Warn("关闭统计目录写入检测文件失败: %v", closeErr)
-	}
-	if removeErr := os.Remove(fileName); removeErr != nil {
-		logger.Warn("清理统计目录写入检测文件失败: %v", removeErr)
-	}
-
-	logger.Info("统计目录写入检查通过: dir=%s mode=%s", dir, strings.TrimPrefix(info.Mode().String(), "d"))
-	return nil
-}
-
-// migrateSchema 检测并迁移表结构
-func migrateSchema(db *sql.DB) error {
-	if err := dropRemovedConfigTables(db); err != nil {
-		return err
-	}
-
-	// 检测表是否存在
-	var tableExists int
-	err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='query_logs'").Scan(&tableExists)
-	if err != nil {
-		return fmt.Errorf("检测表存在失败: %w", err)
-	}
-
-	if tableExists == 0 {
-		// 表不存在，直接创建新表
-		return createNewTable(db)
-	}
-
-	// 检测表是否包含 result_count 列（v3 新结构标志）
-	var hasResultCount int
-	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('query_logs') WHERE name='result_count'").Scan(&hasResultCount)
-	if err != nil {
-		return fmt.Errorf("检测表结构失败: %w", err)
-	}
-
-	if hasResultCount == 0 {
-		// 旧表结构（无论是 v1 classroom 版还是 v2 keyword-only 版），都需要迁移
-		logger.Warn("检测到旧版 query_logs 表结构，开始迁移到 v3...")
-		return migrateFromOldSchema(db)
-	}
-
-	// 新结构，增量添加 ip / ua_hash 列（v4 用户识别字段）
-	if err := addUserColumnsIfNotExist(db); err != nil {
-		return err
-	}
-
-	// 新表结构，检查索引
-	return createIndexesIfNotExist(db)
-}
-
-func dropRemovedConfigTables(db *sql.DB) error {
-	if _, err := db.Exec("DROP TABLE IF EXISTS api_config"); err != nil {
-		return fmt.Errorf("删除废弃配置表 api_config 失败: %w", err)
-	}
-	if _, err := db.Exec("DROP TABLE IF EXISTS open_api_config"); err != nil {
-		return fmt.Errorf("删除废弃配置表 open_api_config 失败: %w", err)
-	}
-	return nil
-}
-
-// createNewTable 创建新的表结构
-func createNewTable(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS query_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			keyword TEXT NOT NULL,
-			date_offset INTEGER NOT NULL DEFAULT 0,
-			start_node TEXT NOT NULL DEFAULT '',
-			end_node TEXT NOT NULL DEFAULT '',
-			result_count INTEGER NOT NULL DEFAULT 0,
-			ip TEXT NOT NULL DEFAULT '',
-			ua_hash TEXT NOT NULL DEFAULT '',
-			queried_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		);
-		CREATE INDEX IF NOT EXISTS idx_queried_at ON query_logs(queried_at);
-		CREATE INDEX IF NOT EXISTS idx_keyword ON query_logs(keyword);
-		CREATE INDEX IF NOT EXISTS idx_combo ON query_logs(keyword, date_offset, start_node, end_node, result_count);
-		CREATE INDEX IF NOT EXISTS idx_ip_ua ON query_logs(ip, ua_hash);
-	`)
-	if err != nil {
-		return fmt.Errorf("创建表失败: %w", err)
-	}
-	return nil
-}
-
-// addUserColumnsIfNotExist 为已有 v3 表增量添加 ip / ua_hash 列 (v4 迁移)
-func addUserColumnsIfNotExist(db *sql.DB) error {
-	// 检测 ip 列
-	var hasIP int
-	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('query_logs') WHERE name='ip'").Scan(&hasIP); err != nil {
-		return fmt.Errorf("检测 ip 列失败: %w", err)
-	}
-	if hasIP == 0 {
-		if _, err := db.Exec("ALTER TABLE query_logs ADD COLUMN ip TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("添加 ip 列失败: %w", err)
-		}
-		logger.Warn("已为 query_logs 添加 ip 列 (v4)")
-	}
-
-	// 检测 ua_hash 列
-	var hasUA int
-	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('query_logs') WHERE name='ua_hash'").Scan(&hasUA); err != nil {
-		return fmt.Errorf("检测 ua_hash 列失败: %w", err)
-	}
-	if hasUA == 0 {
-		if _, err := db.Exec("ALTER TABLE query_logs ADD COLUMN ua_hash TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("添加 ua_hash 列失败: %w", err)
-		}
-		logger.Warn("已为 query_logs 添加 ua_hash 列 (v4)")
-	}
-
-	return nil
-}
-
-// migrateFromOldSchema 从旧结构迁移到新结构（直接删除旧数据重建）
-func migrateFromOldSchema(db *sql.DB) error {
-	// 删除旧表
-	_, err := db.Exec("DROP TABLE query_logs")
-	if err != nil {
-		return fmt.Errorf("删除旧表失败: %w", err)
-	}
-
-	// 创建新表
-	err = createNewTable(db)
-	if err != nil {
-		return err
-	}
-
-	logger.Warn("旧版 query_logs 表已删除，已创建 v3 新表结构")
-	return nil
-}
-
-// createIndexesIfNotExist 创建索引（如果不存在）
-func createIndexesIfNotExist(db *sql.DB) error {
-	_, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_queried_at ON query_logs(queried_at)")
-	if err != nil {
-		return fmt.Errorf("创建 queried_at 索引失败: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_keyword ON query_logs(keyword)")
-	if err != nil {
-		return fmt.Errorf("创建 keyword 索引失败: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_combo ON query_logs(keyword, date_offset, start_node, end_node, result_count)")
-	if err != nil {
-		return fmt.Errorf("创建 combo 索引失败: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_ip_ua ON query_logs(ip, ua_hash)")
-	if err != nil {
-		return fmt.Errorf("创建 ip_ua 索引失败: %w", err)
-	}
-	return nil
-}
-
-// RecordQuery 记录一次搜索查询（异步调用），包含完整的搜索参数、结果数量和用户识别信息
+// RecordQuery 记录一次搜索查询，时间统一以 UTC 写入 TIMESTAMPTZ。
 func (s *StatsService) RecordQuery(record model.QueryRecord) {
 	if record.Keyword == "" {
 		return
 	}
-
-	// 使用互斥锁确保写入串行化，防止 SQLite 并发写入冲突
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec(
-		"INSERT INTO query_logs (keyword, date_offset, start_node, end_node, result_count, ip, ua_hash, queried_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		record.Keyword, record.DateOffset, record.StartNode, record.EndNode, record.ResultCount, record.IP, record.UAHash, nowUTCForStorage(),
+	_, err := s.db.Exec(`
+		INSERT INTO query_logs (
+			keyword, date_offset, start_node, end_node,
+			result_count, ip, ua_hash, queried_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`,
+		record.Keyword,
+		record.DateOffset,
+		record.StartNode,
+		record.EndNode,
+		record.ResultCount,
+		record.IP,
+		record.UAHash,
+		time.Now().UTC(),
 	)
 	if err != nil {
 		logger.Warn("记录搜索查询失败: %v", err)
 	}
 }
 
-// GetStats 获取统计数据（使用 UTC+8 作为默认时区计算"今天"边界）
+// GetStats 获取查询统计数据，默认按 UTC+8 划分自然日、周和月。
 func (s *StatsService) GetStats() (*model.StatsResponse, error) {
-	// 使用 UTC+8 作为默认时区（面向中国用户）
-	cst := time.FixedZone("CST", 8*3600)
-	now := time.Now().UTC().In(cst)
-	todayStart := now.Format("2006-01-02") + " 00:00:00"
-
-	// 本周一
-	weekday := int(now.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	mondayDate := now.AddDate(0, 0, -(weekday - 1))
-	weekStart := mondayDate.Format("2006-01-02") + " 00:00:00"
-
-	// 本月1号
-	monthStart := now.Format("2006-01") + "-01 00:00:00"
-
-	// 将用户时区的日期边界转换为 UTC 进行查询
-	todayStartUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", todayStart, cst)
-	weekStartUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", weekStart, cst)
-	monthStartUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", monthStart, cst)
-
-	todayStartStr := todayStartUTC.UTC().Format("2006-01-02 15:04:05")
-	weekStartStr := weekStartUTC.UTC().Format("2006-01-02 15:04:05")
-	monthStartStr := monthStartUTC.UTC().Format("2006-01-02 15:04:05")
+	location := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Now()
+	todayStart := startOfDay(now, location)
+	weekStart := startOfWeek(now, location)
+	monthStart := startOfMonth(now, location)
 
 	resp := &model.StatsResponse{}
-
-	// 今日查询次数
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", todayStartStr).Scan(&resp.TodayCount); err != nil {
-		logger.Error("查询今日统计失败: %v", err)
-		return nil, fmt.Errorf("查询今日统计失败: %w", err)
+	if err := s.db.QueryRow(`
+		SELECT
+			COUNT(*) FILTER (WHERE queried_at >= $1),
+			COUNT(*) FILTER (WHERE queried_at >= $2),
+			COUNT(*) FILTER (WHERE queried_at >= $3)
+		FROM query_logs
+	`, todayStart, weekStart, monthStart).Scan(
+		&resp.TodayCount,
+		&resp.WeekCount,
+		&resp.MonthCount,
+	); err != nil {
+		return nil, fmt.Errorf("查询统计计数失败: %w", err)
 	}
 
-	// 本周查询次数
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", weekStartStr).Scan(&resp.WeekCount); err != nil {
-		logger.Error("查询本周统计失败: %v", err)
-		return nil, fmt.Errorf("查询本周统计失败: %w", err)
-	}
-
-	// 本月查询次数
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", monthStartStr).Scan(&resp.MonthCount); err != nil {
-		logger.Error("查询本月统计失败: %v", err)
-		return nil, fmt.Errorf("查询本月统计失败: %w", err)
-	}
-
-	// 今日最热搜索关键词
-	if err := s.db.QueryRow(
-		"SELECT keyword FROM query_logs WHERE queried_at >= ? GROUP BY keyword ORDER BY COUNT(*) DESC LIMIT 1",
-		todayStartStr,
-	).Scan(&resp.TodayTop); err != nil && err != sql.ErrNoRows {
-		logger.Error("查询今日最热关键词失败: %v", err)
+	var err error
+	if resp.TodayTop, err = s.topKeywordSince(todayStart); err != nil {
 		return nil, fmt.Errorf("查询今日最热关键词失败: %w", err)
 	}
-
-	// 本周最热搜索关键词
-	if err := s.db.QueryRow(
-		"SELECT keyword FROM query_logs WHERE queried_at >= ? GROUP BY keyword ORDER BY COUNT(*) DESC LIMIT 1",
-		weekStartStr,
-	).Scan(&resp.WeekTop); err != nil && err != sql.ErrNoRows {
-		logger.Error("查询本周最热关键词失败: %v", err)
+	if resp.WeekTop, err = s.topKeywordSince(weekStart); err != nil {
 		return nil, fmt.Errorf("查询本周最热关键词失败: %w", err)
 	}
-
-	// 本月最热搜索关键词
-	if err := s.db.QueryRow(
-		"SELECT keyword FROM query_logs WHERE queried_at >= ? GROUP BY keyword ORDER BY COUNT(*) DESC LIMIT 1",
-		monthStartStr,
-	).Scan(&resp.MonthTop); err != nil && err != sql.ErrNoRows {
-		logger.Error("查询本月最热关键词失败: %v", err)
+	if resp.MonthTop, err = s.topKeywordSince(monthStart); err != nil {
 		return nil, fmt.Errorf("查询本月最热关键词失败: %w", err)
 	}
-
 	return resp, nil
 }
 
-// GetTopQueries 获取搜索排行前 N 的查询组合（仅统计结果非空的记录）
+func (s *StatsService) topKeywordSince(start time.Time) (string, error) {
+	var keyword string
+	err := s.db.QueryRow(`
+		SELECT keyword
+		FROM query_logs
+		WHERE queried_at >= $1
+		GROUP BY keyword
+		ORDER BY COUNT(*) DESC, keyword ASC
+		LIMIT 1
+	`, start).Scan(&keyword)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return keyword, err
+}
+
+// GetTopQueries 获取结果非空的热门查询组合。
 func (s *StatsService) GetTopQueries(limit int) ([]model.TopQueryItem, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-
-	rows, err := s.db.Query(
-		`SELECT keyword, date_offset, start_node, end_node, COUNT(*) AS cnt
-		 FROM query_logs
-		 WHERE result_count > 0
-		 GROUP BY keyword, date_offset, start_node, end_node
-		 ORDER BY cnt DESC
-		 LIMIT ?`,
-		limit,
-	)
+	rows, err := s.db.Query(`
+		SELECT keyword, date_offset, start_node, end_node, COUNT(*) AS count
+		FROM query_logs
+		WHERE result_count > 0
+		GROUP BY keyword, date_offset, start_node, end_node
+		ORDER BY count DESC
+		LIMIT $1
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("查询热门搜索组合失败: %w", err)
 	}
 	defer rows.Close()
 
-	var queries []model.TopQueryItem
+	queries := make([]model.TopQueryItem, 0)
 	for rows.Next() {
 		var item model.TopQueryItem
-		if err := rows.Scan(&item.Building, &item.DateOffset, &item.StartNode, &item.EndNode, &item.Count); err != nil {
-			return nil, fmt.Errorf("扫描热门搜索组合数据失败: %w", err)
+		if err := rows.Scan(
+			&item.Building,
+			&item.DateOffset,
+			&item.StartNode,
+			&item.EndNode,
+			&item.Count,
+		); err != nil {
+			return nil, fmt.Errorf("扫描热门搜索组合失败: %w", err)
 		}
 		queries = append(queries, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历热门搜索组合结果失败: %w", err)
+		return nil, fmt.Errorf("遍历热门搜索组合失败: %w", err)
 	}
-
 	return queries, nil
 }
 
-// GetDashboardData 获取数据大屏综合统计数据
-// tzOffsetMin 为客户端时区相对 UTC 的偏移分钟数（如 UTC+8 传 480）
-func (s *StatsService) GetDashboardData(timeRange string, days int, tzOffsetMin int) (*model.DashboardResponse, error) {
-	// 根据用户时区计算"今天"的起始时间（转为 UTC 表示）
-	tzOffset := time.FixedZone("client", tzOffsetMin*60)
-	nowInUserTZ := time.Now().UTC().In(tzOffset)
-	var startTime string
-
+// GetDashboardData 获取数据大屏综合统计数据。
+// tzOffsetMin 是客户端相对 UTC 的分钟偏移，例如 UTC+8 为 480。
+func (s *StatsService) GetDashboardData(timeRange string, days, tzOffsetMin int) (*model.DashboardResponse, error) {
+	location := time.FixedZone("client", tzOffsetMin*60)
+	now := time.Now().UTC()
+	localNow := now.In(location)
+	daysBack := 0
 	switch timeRange {
 	case "today":
-		startTime = nowInUserTZ.Format("2006-01-02") + " 00:00:00"
 	case "week":
-		startTime = nowInUserTZ.AddDate(0, 0, -6).Format("2006-01-02") + " 00:00:00"
+		daysBack = 6
 	case "month":
-		startTime = nowInUserTZ.AddDate(0, 0, -29).Format("2006-01-02") + " 00:00:00"
+		daysBack = 29
 	case "custom":
 		if days < 1 {
 			days = 1
 		}
-		startTime = nowInUserTZ.AddDate(0, 0, -(days-1)).Format("2006-01-02") + " 00:00:00"
+		daysBack = days - 1
 	default:
-		startTime = nowInUserTZ.Format("2006-01-02") + " 00:00:00"
+		return nil, fmt.Errorf("不支持的时间范围: %s", timeRange)
 	}
-
-	// 将用户时区的日期起始时间转换为 UTC 存储时间进行查询
-	userStart, _ := time.ParseInLocation("2006-01-02 15:04:05", startTime, tzOffset)
-	startTime = userStart.UTC().Format("2006-01-02 15:04:05")
+	startLocal := localNow.AddDate(0, 0, -daysBack)
+	startTime := time.Date(
+		startLocal.Year(), startLocal.Month(), startLocal.Day(),
+		0, 0, 0, 0, location,
+	).UTC()
 
 	resp := &model.DashboardResponse{}
-
-	// 并行获取各项数据
 	var overviewErr, trendErr, keywordErr, nodeErr, resultErr, hourlyErr error
 	var wg sync.WaitGroup
-
 	wg.Add(6)
 
 	go func() {
 		defer wg.Done()
-		resp.Overview, overviewErr = s.getDashboardOverview(startTime, tzOffsetMin)
+		resp.Overview, overviewErr = s.getDashboardOverview(startTime, location)
 	}()
-
 	go func() {
 		defer wg.Done()
-		resp.Trend, trendErr = s.getDashboardTrend(timeRange, startTime, nowInUserTZ, days, tzOffsetMin)
+		resp.Trend, trendErr = s.getDashboardTrend(timeRange, startTime, localNow, days, tzOffsetMin)
 	}()
-
 	go func() {
 		defer wg.Done()
 		resp.TopKeywords, keywordErr = s.getDashboardKeywords(startTime)
 	}()
-
 	go func() {
 		defer wg.Done()
 		resp.NodeDist, nodeErr = s.getDashboardNodeDist(startTime)
 	}()
-
 	go func() {
 		defer wg.Done()
 		resp.ResultStats, resultErr = s.getDashboardResultStats(startTime)
 	}()
-
 	go func() {
 		defer wg.Done()
 		resp.HourlyDist, hourlyErr = s.getDashboardHourlyDist(startTime, tzOffsetMin)
 	}()
 
 	wg.Wait()
-
-	// 返回第一个遇到的错误
 	for _, err := range []error{overviewErr, trendErr, keywordErr, nodeErr, resultErr, hourlyErr} {
 		if err != nil {
 			return nil, err
 		}
 	}
-
 	return resp, nil
 }
 
-// getDashboardOverview 获取总览数据（按用户时区计算日期边界）
-func (s *StatsService) getDashboardOverview(startTime string, tzOffsetMin int) (model.DashboardOverview, error) {
-	var o model.DashboardOverview
-	tzOffset := time.FixedZone("client", tzOffsetMin*60)
-	now := time.Now().UTC().In(tzOffset)
-
-	// 时间段内总查询次数 + 独立搜索词数 + 平均结果数 + 最大结果数
-	err := s.db.QueryRow(`
-		SELECT COUNT(*), COUNT(DISTINCT keyword),
-			   COALESCE(AVG(result_count), 0), COALESCE(MAX(result_count), 0)
-		FROM query_logs WHERE queried_at >= ?`, startTime,
-	).Scan(&o.TotalCount, &o.UniqueKeywords, &o.AvgResultCount, &o.MaxResultCount)
-	if err != nil {
-		return o, fmt.Errorf("查询总览数据失败: %w", err)
+func (s *StatsService) getDashboardOverview(startTime time.Time, location *time.Location) (model.DashboardOverview, error) {
+	var overview model.DashboardOverview
+	if err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COUNT(DISTINCT keyword),
+			COALESCE(AVG(result_count), 0)::DOUBLE PRECISION,
+			COALESCE(MAX(result_count), 0)
+		FROM query_logs
+		WHERE queried_at >= $1
+	`, startTime).Scan(
+		&overview.TotalCount,
+		&overview.UniqueKeywords,
+		&overview.AvgResultCount,
+		&overview.MaxResultCount,
+	); err != nil {
+		return overview, fmt.Errorf("查询总览数据失败: %w", err)
 	}
 
-	// 时间段内独立用户数 (IP+UA 组合去重) 和独立 IP 数
-	// 仅统计有 IP 记录的行 (兼容 v3 旧数据 ip 为空的情况)
-	err = s.db.QueryRow(`
-		SELECT COUNT(DISTINCT ip || '|' || ua_hash), COUNT(DISTINCT ip)
-		FROM query_logs WHERE queried_at >= ? AND ip != ''`, startTime,
-	).Scan(&o.UniqueVisitors, &o.UniqueIPs)
-	if err != nil {
-		return o, fmt.Errorf("查询独立用户数失败: %w", err)
+	if err := s.db.QueryRow(`
+		SELECT
+			COUNT(DISTINCT ip || '|' || ua_hash),
+			COUNT(DISTINCT ip)
+		FROM query_logs
+		WHERE queried_at >= $1 AND ip <> ''
+	`, startTime).Scan(&overview.UniqueVisitors, &overview.UniqueIPs); err != nil {
+		return overview, fmt.Errorf("查询独立用户数失败: %w", err)
 	}
 
-	// 今日（用户时区的今天 00:00 转为 UTC）
-	todayInUserTZ := now.Format("2006-01-02") + " 00:00:00"
-	todayUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", todayInUserTZ, tzOffset)
-	todayStartStr := todayUTC.UTC().Format("2006-01-02 15:04:05")
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", todayStartStr).Scan(&o.TodayCount); err != nil {
-		return o, fmt.Errorf("查询今日统计失败: %w", err)
+	now := time.Now()
+	if err := s.db.QueryRow(`
+		SELECT
+			COUNT(*) FILTER (WHERE queried_at >= $1),
+			COUNT(*) FILTER (WHERE queried_at >= $2),
+			COUNT(*) FILTER (WHERE queried_at >= $3)
+		FROM query_logs
+	`,
+		startOfDay(now, location),
+		startOfWeek(now, location),
+		startOfMonth(now, location),
+	).Scan(
+		&overview.TodayCount,
+		&overview.WeekCount,
+		&overview.MonthCount,
+	); err != nil {
+		return overview, fmt.Errorf("查询周期统计失败: %w", err)
 	}
-
-	// 本周
-	weekday := int(now.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	weekInUserTZ := now.AddDate(0, 0, -(weekday-1)).Format("2006-01-02") + " 00:00:00"
-	weekUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", weekInUserTZ, tzOffset)
-	weekStartStr := weekUTC.UTC().Format("2006-01-02 15:04:05")
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", weekStartStr).Scan(&o.WeekCount); err != nil {
-		return o, fmt.Errorf("查询本周统计失败: %w", err)
-	}
-
-	// 本月
-	monthInUserTZ := now.Format("2006-01") + "-01 00:00:00"
-	monthUTC, _ := time.ParseInLocation("2006-01-02 15:04:05", monthInUserTZ, tzOffset)
-	monthStartStr := monthUTC.UTC().Format("2006-01-02 15:04:05")
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM query_logs WHERE queried_at >= ?", monthStartStr).Scan(&o.MonthCount); err != nil {
-		return o, fmt.Errorf("查询本月统计失败: %w", err)
-	}
-
-	return o, nil
+	return overview, nil
 }
 
-// getDashboardTrend 获取趋势数据（按用户时区偏移转换）
-func (s *StatsService) getDashboardTrend(timeRange, startTime string, now time.Time, days int, tzOffsetMin int) ([]model.TrendPoint, error) {
-	var points []model.TrendPoint
-
-	// 构造 SQLite 时区偏移修饰符
-	offsetHours := tzOffsetMin / 60
-	modifier := fmt.Sprintf("%+d hours", offsetHours)
-
-	switch timeRange {
-	case "today":
-		// 按小时分组（带时区偏移）
-		query := fmt.Sprintf(`SELECT strftime('%%H', queried_at, '%s') AS label, COUNT(*) AS cnt
-				 FROM query_logs WHERE queried_at >= ?
-				 GROUP BY label ORDER BY label`, modifier)
-		rows, err := s.db.Query(query, startTime)
-		if err != nil {
-			return nil, fmt.Errorf("查询今日趋势失败: %w", err)
-		}
-		defer rows.Close()
-
-		hourMap := make(map[string]int)
-		for rows.Next() {
-			var label string
-			var count int
-			if err := rows.Scan(&label, &count); err != nil {
-				return nil, err
+func (s *StatsService) getDashboardTrend(
+	timeRange string,
+	startTime time.Time,
+	localNow time.Time,
+	days, tzOffsetMin int,
+) ([]model.TrendPoint, error) {
+	format := "YYYY-MM-DD"
+	pointCount := 0
+	if timeRange == "today" {
+		format = "HH24"
+		pointCount = 24
+	} else {
+		switch timeRange {
+		case "week":
+			pointCount = 7
+		case "month":
+			pointCount = 30
+		case "custom":
+			if days < 1 {
+				days = 1
 			}
-			hourMap[label] = count
+			pointCount = days
+		default:
+			return nil, fmt.Errorf("不支持的时间范围: %s", timeRange)
 		}
-		// 填充 0-23 小时
-		for h := 0; h < 24; h++ {
-			label := fmt.Sprintf("%02d:00", h)
-			key := fmt.Sprintf("%02d", h)
-			points = append(points, model.TrendPoint{Label: label, Count: hourMap[key]})
-		}
-
-	case "week":
-		// 按天分组，最近 7 天（带时区偏移）
-		query := fmt.Sprintf(`SELECT strftime('%%Y-%%m-%%d', queried_at, '%s') AS label, COUNT(*) AS cnt
-				 FROM query_logs WHERE queried_at >= ?
-				 GROUP BY label ORDER BY label`, modifier)
-		rows, err := s.db.Query(query, startTime)
-		if err != nil {
-			return nil, fmt.Errorf("查询本周趋势失败: %w", err)
-		}
-		defer rows.Close()
-
-		dayMap := make(map[string]int)
-		for rows.Next() {
-			var label string
-			var count int
-			if err := rows.Scan(&label, &count); err != nil {
-				return nil, err
-			}
-			dayMap[label] = count
-		}
-		// 填充最近 7 天
-		for i := 6; i >= 0; i-- {
-			d := now.AddDate(0, 0, -i)
-			label := d.Format("01-02")
-			key := d.Format("2006-01-02")
-			points = append(points, model.TrendPoint{Label: label, Count: dayMap[key]})
-		}
-
-	case "month":
-		// 按天分组，最近 30 天（带时区偏移）
-		query := fmt.Sprintf(`SELECT strftime('%%Y-%%m-%%d', queried_at, '%s') AS label, COUNT(*) AS cnt
-				 FROM query_logs WHERE queried_at >= ?
-				 GROUP BY label ORDER BY label`, modifier)
-		rows, err := s.db.Query(query, startTime)
-		if err != nil {
-			return nil, fmt.Errorf("查询本月趋势失败: %w", err)
-		}
-		defer rows.Close()
-
-		dayMap := make(map[string]int)
-		for rows.Next() {
-			var label string
-			var count int
-			if err := rows.Scan(&label, &count); err != nil {
-				return nil, err
-			}
-			dayMap[label] = count
-		}
-		// 填充最近 30 天
-		for i := 29; i >= 0; i-- {
-			d := now.AddDate(0, 0, -i)
-			label := d.Format("01-02")
-			key := d.Format("2006-01-02")
-			points = append(points, model.TrendPoint{Label: label, Count: dayMap[key]})
-		}
-
-	case "custom":
-		if days < 1 {
-			days = 1
-		}
-		query := fmt.Sprintf(`SELECT strftime('%%Y-%%m-%%d', queried_at, '%s') AS label, COUNT(*) AS cnt
-				 FROM query_logs WHERE queried_at >= ?
-				 GROUP BY label ORDER BY label`, modifier)
-		rows, err := s.db.Query(query, startTime)
-		if err != nil {
-			return nil, fmt.Errorf("查询自定义范围趋势失败: %w", err)
-		}
-		defer rows.Close()
-
-		dayMap := make(map[string]int)
-		for rows.Next() {
-			var label string
-			var count int
-			if err := rows.Scan(&label, &count); err != nil {
-				return nil, err
-			}
-			dayMap[label] = count
-		}
-		for i := days - 1; i >= 0; i-- {
-			d := now.AddDate(0, 0, -i)
-			label := d.Format("01-02")
-			key := d.Format("2006-01-02")
-			points = append(points, model.TrendPoint{Label: label, Count: dayMap[key]})
-		}
-
-	default:
-		return nil, fmt.Errorf("不支持的时间范围: %s", timeRange)
 	}
 
+	rows, err := s.db.Query(`
+		SELECT
+			TO_CHAR(
+				(queried_at AT TIME ZONE 'UTC') + ($2::INTEGER * INTERVAL '1 minute'),
+				$3
+			) AS label,
+			COUNT(*) AS count
+		FROM query_logs
+		WHERE queried_at >= $1
+		GROUP BY label
+		ORDER BY label
+	`, startTime, tzOffsetMin, format)
+	if err != nil {
+		return nil, fmt.Errorf("查询趋势失败: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var label string
+		var count int
+		if err := rows.Scan(&label, &count); err != nil {
+			return nil, fmt.Errorf("扫描趋势数据失败: %w", err)
+		}
+		counts[label] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历趋势数据失败: %w", err)
+	}
+
+	points := make([]model.TrendPoint, 0, pointCount)
+	if timeRange == "today" {
+		for hour := 0; hour < 24; hour++ {
+			key := fmt.Sprintf("%02d", hour)
+			points = append(points, model.TrendPoint{
+				Label: key + ":00",
+				Count: counts[key],
+			})
+		}
+		return points, nil
+	}
+
+	for offset := pointCount - 1; offset >= 0; offset-- {
+		date := localNow.AddDate(0, 0, -offset)
+		points = append(points, model.TrendPoint{
+			Label: date.Format("01-02"),
+			Count: counts[date.Format("2006-01-02")],
+		})
+	}
 	return points, nil
 }
 
-// getDashboardKeywords 获取搜索词排行
-func (s *StatsService) getDashboardKeywords(startTime string) ([]model.KeywordRankItem, error) {
+func (s *StatsService) getDashboardKeywords(startTime time.Time) ([]model.KeywordRankItem, error) {
 	rows, err := s.db.Query(`
-		SELECT keyword, COUNT(*) AS cnt
-		FROM query_logs WHERE queried_at >= ?
-		GROUP BY keyword ORDER BY cnt DESC LIMIT 10`, startTime)
+		SELECT keyword, COUNT(*) AS count
+		FROM query_logs
+		WHERE queried_at >= $1
+		GROUP BY keyword
+		ORDER BY count DESC
+		LIMIT 10
+	`, startTime)
 	if err != nil {
 		return nil, fmt.Errorf("查询搜索词排行失败: %w", err)
 	}
 	defer rows.Close()
 
-	var items []model.KeywordRankItem
+	items := make([]model.KeywordRankItem, 0)
 	for rows.Next() {
 		var item model.KeywordRankItem
 		if err := rows.Scan(&item.Keyword, &item.Count); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("扫描搜索词排行失败: %w", err)
 		}
 		items = append(items, item)
 	}
-	if items == nil {
-		items = []model.KeywordRankItem{}
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-// getDashboardNodeDist 获取节次分布
-func (s *StatsService) getDashboardNodeDist(startTime string) ([]model.NodeDistItem, error) {
+func (s *StatsService) getDashboardNodeDist(startTime time.Time) ([]model.NodeDistItem, error) {
 	rows, err := s.db.Query(`
-		SELECT start_node || '-' || end_node AS node_range, COUNT(*) AS cnt
+		SELECT start_node || '-' || end_node AS node_range, COUNT(*) AS count
 		FROM query_logs
-		WHERE queried_at >= ? AND start_node != '' AND end_node != ''
-		GROUP BY node_range ORDER BY cnt DESC LIMIT 10`, startTime)
+		WHERE queried_at >= $1 AND start_node <> '' AND end_node <> ''
+		GROUP BY node_range
+		ORDER BY count DESC
+		LIMIT 10
+	`, startTime)
 	if err != nil {
 		return nil, fmt.Errorf("查询节次分布失败: %w", err)
 	}
 	defer rows.Close()
 
-	var items []model.NodeDistItem
+	items := make([]model.NodeDistItem, 0)
 	for rows.Next() {
 		var item model.NodeDistItem
 		if err := rows.Scan(&item.Node, &item.Count); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("扫描节次分布失败: %w", err)
 		}
 		items = append(items, item)
 	}
-	if items == nil {
-		items = []model.NodeDistItem{}
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-// getDashboardResultStats 获取查询结果统计
-func (s *StatsService) getDashboardResultStats(startTime string) (model.ResultStatsData, error) {
-	var r model.ResultStatsData
-
-	// 基础统计
-	err := s.db.QueryRow(`
-		SELECT COALESCE(AVG(result_count), 0), COALESCE(MAX(result_count), 0),
-		       COALESCE(MIN(CASE WHEN result_count > 0 THEN result_count END), 0),
-		       COALESCE(SUM(CASE WHEN result_count = 0 THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END), 0)
-		FROM query_logs WHERE queried_at >= ?`, startTime,
-	).Scan(&r.AvgCount, &r.MaxCount, &r.MinCount, &r.ZeroCount, &r.NonZeroCount)
-	if err != nil {
-		return r, fmt.Errorf("查询结果统计失败: %w", err)
+func (s *StatsService) getDashboardResultStats(startTime time.Time) (model.ResultStatsData, error) {
+	var result model.ResultStatsData
+	if err := s.db.QueryRow(`
+		SELECT
+			COALESCE(AVG(result_count), 0)::DOUBLE PRECISION,
+			COALESCE(MAX(result_count), 0),
+			COALESCE(MIN(result_count) FILTER (WHERE result_count > 0), 0),
+			COUNT(*) FILTER (WHERE result_count = 0),
+			COUNT(*) FILTER (WHERE result_count > 0)
+		FROM query_logs
+		WHERE queried_at >= $1
+	`, startTime).Scan(
+		&result.AvgCount,
+		&result.MaxCount,
+		&result.MinCount,
+		&result.ZeroCount,
+		&result.NonZeroCount,
+	); err != nil {
+		return result, fmt.Errorf("查询结果统计失败: %w", err)
 	}
 
-	// 区间分布
-	type distRange struct {
+	ranges := []struct {
 		label string
 		min   int
 		max   int
-	}
-	ranges := []distRange{
+	}{
 		{"0", 0, 0},
 		{"1-5", 1, 5},
 		{"6-10", 6, 10},
@@ -720,75 +413,76 @@ func (s *StatsService) getDashboardResultStats(startTime string) (model.ResultSt
 		{"21-50", 21, 50},
 		{"50+", 51, 999999},
 	}
-
-	for _, dr := range ranges {
+	result.Distribution = make([]model.ResultDistItem, 0, len(ranges))
+	for _, itemRange := range ranges {
 		var count int
-		err := s.db.QueryRow(`
-			SELECT COUNT(*) FROM query_logs
-			WHERE queried_at >= ? AND result_count >= ? AND result_count <= ?`,
-			startTime, dr.min, dr.max,
-		).Scan(&count)
-		if err != nil {
-			return r, fmt.Errorf("查询结果区间分布失败: %w", err)
+		if err := s.db.QueryRow(`
+			SELECT COUNT(*)
+			FROM query_logs
+			WHERE queried_at >= $1 AND result_count BETWEEN $2 AND $3
+		`, startTime, itemRange.min, itemRange.max).Scan(&count); err != nil {
+			return result, fmt.Errorf("查询结果区间分布失败: %w", err)
 		}
-		r.Distribution = append(r.Distribution, model.ResultDistItem{Range: dr.label, Count: count})
+		result.Distribution = append(result.Distribution, model.ResultDistItem{
+			Range: itemRange.label,
+			Count: count,
+		})
 	}
-
-	return r, nil
+	return result, nil
 }
 
-// getDashboardHourlyDist 获取每小时查询分布（按用户时区偏移转换）
-func (s *StatsService) getDashboardHourlyDist(startTime string, tzOffsetMin int) ([]model.HourlyDistItem, error) {
-	// 构造 SQLite 时区偏移修饰符，如 '+8 hours', '-5 hours', '+5 hours +30 minutes'
-	offsetHours := tzOffsetMin / 60
-	offsetMins := tzOffsetMin % 60
-	var modifier string
-	if offsetMins == 0 {
-		modifier = fmt.Sprintf("%+d hours", offsetHours)
-	} else {
-		modifier = fmt.Sprintf("%+d hours", offsetHours)
-		if offsetMins > 0 {
-			modifier += fmt.Sprintf(", '+%d minutes'", offsetMins)
-		} else {
-			modifier += fmt.Sprintf(", '%d minutes'", offsetMins)
-		}
-	}
-
-	query := fmt.Sprintf(`
-		SELECT CAST(strftime('%%H', queried_at, '%s') AS INTEGER) AS hour, COUNT(*) AS cnt
-		FROM query_logs WHERE queried_at >= ?
-		GROUP BY hour ORDER BY hour`, modifier)
-
-	rows, err := s.db.Query(query, startTime)
+func (s *StatsService) getDashboardHourlyDist(startTime time.Time, tzOffsetMin int) ([]model.HourlyDistItem, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			EXTRACT(HOUR FROM (
+				(queried_at AT TIME ZONE 'UTC') + ($2::INTEGER * INTERVAL '1 minute')
+			))::INTEGER AS hour,
+			COUNT(*) AS count
+		FROM query_logs
+		WHERE queried_at >= $1
+		GROUP BY hour
+		ORDER BY hour
+	`, startTime, tzOffsetMin)
 	if err != nil {
 		return nil, fmt.Errorf("查询每小时分布失败: %w", err)
 	}
 	defer rows.Close()
 
-	hourMap := make(map[int]int)
+	counts := make(map[int]int)
 	for rows.Next() {
 		var hour, count int
 		if err := rows.Scan(&hour, &count); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("扫描每小时分布失败: %w", err)
 		}
-		hourMap[hour] = count
+		counts[hour] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历每小时分布失败: %w", err)
 	}
 
-	// 填充 0-23 小时
 	items := make([]model.HourlyDistItem, 24)
-	for h := 0; h < 24; h++ {
-		items[h] = model.HourlyDistItem{Hour: h, Count: hourMap[h]}
+	for hour := 0; hour < 24; hour++ {
+		items[hour] = model.HourlyDistItem{Hour: hour, Count: counts[hour]}
 	}
 	return items, nil
 }
 
-// DB 返回底层数据库连接，供其他服务复用。
-// 注意：调用方不应关闭此连接，生命周期由 StatsService.Close() 统一管理。
-func (s *StatsService) DB() *sql.DB {
-	return s.db
+func startOfDay(now time.Time, location *time.Location) time.Time {
+	local := now.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location).UTC()
 }
 
-// Close 关闭数据库连接
-func (s *StatsService) Close() error {
-	return s.db.Close()
+func startOfWeek(now time.Time, location *time.Location) time.Time {
+	local := now.In(location)
+	weekday := int(local.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	monday := local.AddDate(0, 0, -(weekday - 1))
+	return time.Date(monday.Year(), monday.Month(), monday.Day(), 0, 0, 0, 0, location).UTC()
+}
+
+func startOfMonth(now time.Time, location *time.Location) time.Time {
+	local := now.In(location)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, location).UTC()
 }
