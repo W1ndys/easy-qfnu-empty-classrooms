@@ -28,7 +28,10 @@ func (s *ClassroomService) GetEmptyClassrooms(req model.QueryRequest) (*model.Cl
 	}
 
 	// 1. 获取日期和周次信息
-	calInfo, dateStr := cal.GetDateInfo(req.DateOffset)
+	calInfo, dateStr, err := cal.GetDateInfo(req.DateOffset)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. 构建请求参数
 	// URL: http://zhjw.qfnu.edu.cn/jsxsd/kbxx/jsjy_query2
@@ -120,7 +123,10 @@ func (s *ClassroomService) GetFullDayStatus(req model.FullDayQueryRequest) (*mod
 	}
 
 	// 1. 获取日期和周次信息
-	calInfo, dateStr := cal.GetDateInfo(req.DateOffset)
+	calInfo, dateStr, err := cal.GetDateInfo(req.DateOffset)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. 一次查询全天所有节次（jc 和 jc2 置空）
 	nodeList, classrooms, err := s.queryFullDay(req.BuildingName, calInfo)

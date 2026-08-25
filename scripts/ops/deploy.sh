@@ -16,7 +16,7 @@ run_remote() {
   local command="$2"
 
   log "$message"
-  ssh "${SSH_OPTS[@]}" "${REMOTE}" "cd '${DIR}' && printf '[remote] %s\\n' '$message' && ${command}" \
+  ssh "${SSH_OPTS[@]}" "${REMOTE}" "cd '${DIR}' && export COMPOSE_PROFILES=production && printf '[remote] %s\\n' '$message' && ${command}" \
     || fail "$message failed"
 }
 
@@ -95,6 +95,7 @@ set -euo pipefail
 
 DIR="$1"
 cd "$DIR"
+export COMPOSE_PROFILES=production
 
 deadline=$((SECONDS + 90))
 until docker compose exec -T postgres pg_isready >/dev/null 2>&1; do
@@ -130,7 +131,7 @@ else
   printf '[remote] no pending legacy SQLite migration\n'
 fi
 
-docker compose up -d backend
+docker compose up -d
 EOF
 
 run_remote "cleaning up image tar" "rm -f '${TAR_FILE}'"
@@ -148,6 +149,7 @@ set -euo pipefail
 
 DIR="$1"
 cd "$DIR"
+export COMPOSE_PROFILES=production
 
 printf '[remote] waiting for service health checks\n'
 

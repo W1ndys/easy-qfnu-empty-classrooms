@@ -3,6 +3,7 @@ package v1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -93,9 +94,15 @@ func (h *Handler) runClassroomQuery(c *gin.Context, req model.QueryRequest) (*mo
 	if req.StartNode == "" || req.EndNode == "" {
 		return nil, errBadRequest("请选择起始和终止节次")
 	}
+	if err := validateDateOffset(req.DateOffset); err != nil {
+		return nil, err
+	}
 
 	resp, err := h.classroomService.GetEmptyClassrooms(req)
 	if err != nil {
+		if errors.Is(err, service.ErrDateOutsideCurrentTerm) {
+			return nil, errBadRequest(err.Error())
+		}
 		return nil, err
 	}
 	if h.statsService != nil {
@@ -117,6 +124,13 @@ type errBadRequest string
 
 func (e errBadRequest) Error() string { return string(e) }
 
+func validateDateOffset(offset int) error {
+	if offset < 0 || offset > 180 {
+		return errBadRequest("date_offset 必须在 0 到 180 之间")
+	}
+	return nil
+}
+
 // QueryFullDayStatus 查询全天教室状态
 func (h *Handler) QueryFullDayStatus(c *gin.Context) {
 	var req model.FullDayQueryRequest
@@ -129,9 +143,17 @@ func (h *Handler) QueryFullDayStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入教学楼名称"})
 		return
 	}
+	if err := validateDateOffset(req.DateOffset); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	resp, err := h.classroomService.GetFullDayStatus(req)
 	if err != nil {
+		if errors.Is(err, service.ErrDateOutsideCurrentTerm) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

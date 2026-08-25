@@ -1,4 +1,29 @@
 services:
+  frontend:
+    profiles: ["production"]
+    image: easy-qfnu-kjs-frontend:latest
+    container_name: easy-qfnu-kjs-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - traefik-public
+      - easy-qfnu-kjs-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.easy-qfnu-kjs.rule=Host(`kjs.easy-qfnu.top`)"
+      - "traefik.http.routers.easy-qfnu-kjs.entrypoints=websecure"
+      - "traefik.http.routers.easy-qfnu-kjs.tls.certresolver=leresolver"
+      - "traefik.http.services.easy-qfnu-kjs.loadbalancer.server.port=80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1/index.html"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   postgres:
     image: postgres:17-alpine
     container_name: easy-qfnu-kjs-postgres
@@ -33,6 +58,7 @@ services:
     environment:
       PORT: 8080
       GIN_MODE: release
+      TZ: Asia/Shanghai
       DATABASE_URL: postgres://${POSTGRES_USER:-easy_qfnu_kjs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-easy_qfnu_kjs}?sslmode=disable
     depends_on:
       postgres:
@@ -54,5 +80,7 @@ volumes:
   postgres-data:
 
 networks:
+  traefik-public:
+    external: true
   easy-qfnu-kjs-net:
     driver: bridge

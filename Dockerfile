@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
 FROM alpine:3.20
 WORKDIR /app
 
-RUN apk add --no-cache su-exec \
+RUN apk add --no-cache su-exec tzdata \
     && adduser -D app \
     && mkdir -p /app/data /app/logs \
     && chown -R app:app /app
@@ -29,6 +29,7 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 ENV GIN_MODE=release
 ENV PORT=8080
+ENV TZ=Asia/Shanghai
 
 EXPOSE 8080
 
