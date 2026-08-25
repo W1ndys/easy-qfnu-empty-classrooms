@@ -109,31 +109,31 @@ func (s *CalendarService) Refresh() error {
 		return err
 	}
 	termResp, err := s.client.Do(termReq)
-	if err == nil {
-		bodyBytes, readErr := io.ReadAll(termResp.Body)
-		termResp.Body.Close()
-		if readErr != nil {
-			return fmt.Errorf("读取学期信息失败: %w", readErr)
-		}
-		bodyString := string(bodyBytes)
-		if strings.Contains(bodyString, "非法访问") {
-			hasPermission = false
-			logger.Warn("警告：该账号无权限访问空教室查询接口 (jsjy_query)，请检查账号权限或登录状态。")
-		} else {
-			hasPermission = true
-		}
-
-		termDoc, parseErr := goquery.NewDocumentFromReader(strings.NewReader(bodyString))
-		if parseErr != nil {
-			return fmt.Errorf("解析学期信息失败: %w", parseErr)
-		}
-		termMatch := regexp.MustCompile(`\d{4}-\d{4}-\d`).FindString(termDoc.Text())
-		if termMatch != "" {
-			currentYearStr = termMatch
-		}
-	} else {
-		logger.Warn("警告：无法查询学期信息：%v", err)
+	if err != nil {
+		return fmt.Errorf("查询学期信息失败: %w", err)
 	}
+	bodyBytes, readErr := io.ReadAll(termResp.Body)
+	termResp.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("读取学期信息失败: %w", readErr)
+	}
+	bodyString := string(bodyBytes)
+	if strings.Contains(bodyString, "非法访问") {
+		hasPermission = false
+		logger.Warn("警告：该账号无权限访问空教室查询接口 (jsjy_query)，请检查账号权限或登录状态。")
+	} else {
+		hasPermission = true
+	}
+
+	termDoc, parseErr := goquery.NewDocumentFromReader(strings.NewReader(bodyString))
+	if parseErr != nil {
+		return fmt.Errorf("解析学期信息失败: %w", parseErr)
+	}
+	termMatch := regexp.MustCompile(`\d{4}-\d{4}-\d`).FindString(termDoc.Text())
+	if termMatch == "" {
+		return fmt.Errorf("无法从响应中解析学期信息")
+	}
+	currentYearStr = termMatch
 
 	weekURL := "http://zhjw.qfnu.edu.cn/jsxsd/framework/jsMain_new.jsp?t1=1"
 	weekReq, err := http.NewRequest("GET", weekURL, nil)

@@ -14,6 +14,66 @@ type doerFunc func(*http.Request) (*http.Response, error)
 
 func (f doerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
+func calendarResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}
+
+func assertCalendarSnapshot(t *testing.T, service *CalendarService, oldTime time.Time) {
+	t.Helper()
+	if service.currentYearStr != "2025-2026-2" || service.baseWeek != 18 || service.totalWeeks != 20 || !service.baseTime.Equal(oldTime) || !service.hasPermission {
+		t.Fatalf("刷新失败破坏旧快照: term=%s week=%d total=%d time=%s permission=%t",
+			service.currentYearStr, service.baseWeek, service.totalWeeks, service.baseTime, service.hasPermission)
+	}
+}
+
+func TestRefreshTermRequestFailureKeepsPreviousCalendarSnapshot(t *testing.T) {
+	oldTime := time.Date(2026, 8, 18, 0, 1, 0, 0, chinaLocation)
+	service := &CalendarService{
+		currentYearStr: "2025-2026-2",
+		baseTime:       oldTime,
+		baseWeek:       18,
+		totalWeeks:     20,
+		hasPermission:  true,
+		client: doerFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Path, "jsjy_query") {
+				return nil, fmt.Errorf("term endpoint unavailable")
+			}
+			return calendarResponse(`$("#li_showWeek").html("<span>第1周</span>/20周");`), nil
+		}),
+	}
+
+	if err := service.Refresh(); err == nil {
+		t.Fatal("学期请求失败时 Refresh 应返回错误")
+	}
+	assertCalendarSnapshot(t, service, oldTime)
+}
+
+func TestRefreshMissingTermKeepsPreviousCalendarSnapshot(t *testing.T) {
+	oldTime := time.Date(2026, 8, 18, 0, 1, 0, 0, chinaLocation)
+	service := &CalendarService{
+		currentYearStr: "2025-2026-2",
+		baseTime:       oldTime,
+		baseWeek:       18,
+		totalWeeks:     20,
+		hasPermission:  true,
+		client: doerFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Path, "jsjy_query") {
+				return calendarResponse(`<html><body>学期信息暂不可用</body></html>`), nil
+			}
+			return calendarResponse(`$("#li_showWeek").html("<span>第1周</span>/20周");`), nil
+		}),
+	}
+
+	if err := service.Refresh(); err == nil {
+		t.Fatal("学期响应缺少学期时 Refresh 应返回错误")
+	}
+	assertCalendarSnapshot(t, service, oldTime)
+}
+
 func TestRefreshFailureKeepsPreviousCalendarSnapshot(t *testing.T) {
 	oldTime := time.Date(2026, 8, 18, 0, 1, 0, 0, chinaLocation)
 	service := &CalendarService{
@@ -24,11 +84,7 @@ func TestRefreshFailureKeepsPreviousCalendarSnapshot(t *testing.T) {
 		hasPermission:  true,
 		client: doerFunc(func(req *http.Request) (*http.Response, error) {
 			if strings.Contains(req.URL.Path, "jsjy_query") {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(strings.NewReader(`<html><body>学期：2026-2027-1</body></html>`)),
-					Header:     make(http.Header),
-				}, nil
+				return calendarResponse(`<html><body>学期：2026-2027-1</body></html>`), nil
 			}
 			return nil, fmt.Errorf("week endpoint unavailable")
 		}),
@@ -37,10 +93,7 @@ func TestRefreshFailureKeepsPreviousCalendarSnapshot(t *testing.T) {
 	if err := service.Refresh(); err == nil {
 		t.Fatal("周次请求失败时 Refresh 应返回错误")
 	}
-	if service.currentYearStr != "2025-2026-2" || service.baseWeek != 18 || service.totalWeeks != 20 || !service.baseTime.Equal(oldTime) || !service.hasPermission {
-		t.Fatalf("刷新失败破坏旧快照: term=%s week=%d total=%d time=%s permission=%t",
-			service.currentYearStr, service.baseWeek, service.totalWeeks, service.baseTime, service.hasPermission)
-	}
+	assertCalendarSnapshot(t, service, oldTime)
 }
 
 func TestParseWeekProgressIncludesTotalWeeks(t *testing.T) {
