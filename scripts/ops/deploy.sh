@@ -72,6 +72,10 @@ for f in "${SYNC_FILES[@]}"; do
   fi
 done
 
+rsync -az -e "ssh -p ${PORT} -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
+  "${ROOT_DIR}/scripts/ops/remote-deploy.sh" "${REMOTE}:${DIR}/remote-deploy.sh" \
+  || fail "rsync remote deploy helper failed"
+
 # ---------- 上传镜像 tar ----------
 log "uploading image tar to remote host"
 rsync -az --progress -e "ssh -p ${PORT} -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
@@ -89,50 +93,7 @@ run_remote "loading new images" "docker load -i '${TAR_FILE}'"
 run_remote "starting PostgreSQL" "docker compose up -d postgres"
 
 # ---------- 首次 PostgreSQL 部署：自动导入旧 SQLite ----------
-log "checking whether legacy SQLite migration is required"
-ssh "${SSH_OPTS[@]}" "${REMOTE}" 'bash -s' -- "${DIR}" <<'EOF' || fail "legacy SQLite migration failed"
-set -euo pipefail
-
-DIR="$1"
-cd "$DIR"
-export COMPOSE_PROFILES=production
-
-deadline=$((SECONDS + 90))
-until docker compose exec -T postgres pg_isready >/dev/null 2>&1; do
-  if [ $SECONDS -ge $deadline ]; then
-    printf '[remote] ERROR: PostgreSQL did not become ready\n' >&2
-    docker compose logs --tail=100 postgres >&2 || true
-    exit 1
-  fi
-  sleep 2
-done
-
-legacy_db="data/stats.db"
-migration_marker="data/.sqlite-to-postgresql-migrated"
-if [ -f "$legacy_db" ] && [ ! -f "$migration_marker" ]; then
-  printf '[remote] backing up legacy SQLite files\n'
-  cp -a "$legacy_db" "${legacy_db}.pre-postgresql"
-  if [ -f "${legacy_db}-wal" ]; then
-    cp -a "${legacy_db}-wal" "${legacy_db}-wal.pre-postgresql"
-  fi
-  if [ -f "${legacy_db}-shm" ]; then
-    cp -a "${legacy_db}-shm" "${legacy_db}-shm.pre-postgresql"
-  fi
-
-  printf '[remote] migrating legacy SQLite data to PostgreSQL\n'
-  docker compose run --rm \
-    -v "$DIR/data:/legacy:ro" \
-    backend \
-    /app/migrate-sqlite-to-postgres \
-    -sqlite /legacy/stats.db
-  date -u '+%Y-%m-%dT%H:%M:%SZ' > "$migration_marker"
-  printf '[remote] legacy migration completed\n'
-else
-  printf '[remote] no pending legacy SQLite migration\n'
-fi
-
-docker compose up -d
-EOF
+run_remote "checking whether legacy SQLite migration is required" "bash ./remote-deploy.sh"
 
 run_remote "cleaning up image tar" "rm -f '${TAR_FILE}'"
 
