@@ -19,6 +19,22 @@ import (
 	"github.com/joho/godotenv"
 )
 
+func trustedProxyCIDRs() []string {
+	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if raw == "" {
+		return []string{"172.22.0.0/16", "172.25.0.0/16"}
+	}
+
+	values := strings.Split(raw, ",")
+	cidrs := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			cidrs = append(cidrs, value)
+		}
+	}
+	return cidrs
+}
+
 func main() {
 	// 加载 .env
 	_ = godotenv.Load()
@@ -129,6 +145,10 @@ func main() {
 	r.RedirectFixedPath = false
 	r.ForwardedByClientIP = true
 	r.RemoteIPHeaders = []string{"X-Forwarded-For", "X-Real-IP"}
+	// 只信任生产链路中的 Caddy 和前端 Nginx Docker 网段。
+	if err := r.SetTrustedProxies(trustedProxyCIDRs()); err != nil {
+		logger.Fatal("配置可信代理失败：%v", err)
+	}
 
 	// 搜索接口速率限制：基于 IP + User-Agent，5 秒内只能查询一次
 	searchRateLimiter := middleware.NewRateLimiter(5 * time.Second)

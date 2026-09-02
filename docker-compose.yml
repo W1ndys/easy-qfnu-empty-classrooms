@@ -58,6 +58,7 @@ services:
     environment:
       PORT: 8080
       GIN_MODE: release
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.22.0.0/16,172.25.0.0/16}"
       TZ: Asia/Shanghai
       DATABASE_URL: postgres://${POSTGRES_USER:-easy_qfnu_kjs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-easy_qfnu_kjs}?sslmode=disable
     depends_on:
