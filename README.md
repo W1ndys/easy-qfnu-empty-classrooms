@@ -1,6 +1,12 @@
-# easy-qfnu-kjs
+# easy-qfnu-kjs-legacy
 
-曲阜师范大学空教室查询系统，现已迁移为前后端分离的 Docker 部署架构。
+> **已归档（legacy）**：本仓库为旧版 Docker + Gin + PostgreSQL 实现，仅保留历史与参考，不再继续开发。
+> 新架构（本地采集器 → GitHub → Vercel Serverless + Vue 3）已迁移至新仓库：https://github.com/w1ndys/easy-qfnu-kjs
+> 完整架构设计决策见本仓库 `docs/issue-29-rearchitecture-decisions.md`（Q1—Q171）。
+
+## 历史架构（旧版）
+
+曲阜师范大学空教室查询系统，原为前后端分离的 Docker 部署架构。
 
 ## 部署架构
 
