@@ -58,8 +58,9 @@ easy-qfnu-kjs/
 - 使用锁文件或 `flock` 防止采集任务重叠；任务应有总超时，超时后允许后续任务接管。
 - cron 直接运行统一维护的开发目录（即同一 clone），不单独准备专用工作目录；采集器只负责修改生成数据和 manifest，其他改动仍按正常提交流程管理。
 - 调度使用 systemd user timer（`OnCalendar=*-*-* 04:10:00 Asia/Shanghai`），失败记录到 journald，便于 `systemctl --user` 管理。
-- 教师账号、密码、OCR 地址等通过环境变量或 `.env` 提供；`.env` 必须被 Git 忽略，秘密不得提交到 GitHub 或进入 Vercel。
-- 新仓库提供 `.env.example`：沿用 `QFNU_USERNAME`、`QFNU_PASSWORD`、`OCR_URL`，新增可选的 `FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`；采集器只从开发目录读取 `.env`。
+- 教师账号、密码等通过环境变量或 `.env` 提供；`.env` 必须被 Git 忽略，秘密不得提交到 GitHub 或进入 Vercel。
+- 验证码识别完全使用本地离线方式，不做任何网络 OCR 服务：`.env.example` 提供 `OCR_CMD`（默认 `scripts/ocr_ddddocr.py`，Python `ddddocr`，支持任意读图片路径/stdin 并输出文本的本地命令）；`OCR_URL` 及 ddddocr+Flask 方案废弃。
+- 新仓库提供 `.env.example`：`QFNU_USERNAME`、`QFNU_PASSWORD`、`OCR_CMD`，新增可选的 `FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`；采集器只从开发目录读取 `.env`。
 - GitHub 认证和仓库操作使用已登录的 `gh` CLI；不在配置中保存 PAT。
 - 一轮目标周次全部采集、过滤、校验成功后，统一生成一次 Git 提交并推送，避免一次采集触发多次 Vercel 部署。
 - 采集器提供 `collect`、`validate`、`publish`、`run` 子命令；`run` 执行完整 cron 流程，且支持 `--dry-run`。
