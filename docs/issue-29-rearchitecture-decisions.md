@@ -193,7 +193,7 @@ F126(90/0)                         → F126
 - `git push` 成功不代表发布成功。发布验收参数：每 15 秒检查一次 GitHub 提交检查状态，上限 10 分钟；构建完成后每 10 秒轮询生产域名 manifest 直到 `release_id` 匹配，上限 5 分钟；随后执行一条样例查询；任一环节超时或失败即发送飞书告警。
 - 验收样例查询固定为：manifest 第一个启用分组 + 当前周 + 当天星期 + `01—12`，要求 HTTP 200、响应通过 JSON Schema 校验且 `rooms` 为数组。
 - 生产验收失败时保留 Vercel 当前生产部署不动，本轮终止并告警；是否回滚由人工决定，不自动回滚。
-- 测试执行位置：开发时本地运行 Go 与 TypeScript 测试，并作为 GitHub Actions 对 `main` 分支的必过检查；cron 的 `collect`/`run` 不重跑整套测试，发布校验以 Schema、哈希和引用完整性为准。
+- 测试执行位置：开发时本地运行 Go 与 TypeScript 测试；不使用 GitHub Actions，改为本地开发环境的统一校验 skill（`easy-qfnu-kjs-local-ci`）作为提交前 CI；cron 的 `collect`/`run` 不重跑整套测试，发布校验以 Schema、哈希和引用完整性为准。
 - 工作树只保留当前学期数据。保留所有成功发布提交，不自动 force-push 或重写主分支历史；Git 打包后仓库体积达到 500 MB 时发送告警，达到 1 GB 时阻止自动发布并要求人工归档。
 - 达到 1 GB 后只执行人工归档：先创建私有镜像备份和学期归档包，再使用 `git filter-repo` 删除旧学期 `data/` 历史；完成核验后才 force-push。该流程不得进入 cron。
 - Vercel 查询层使用单个 `/api/v1/*` Node.js 函数承载四个资源路由（manifest、context、empty-classrooms、full-day-status），函数内部按路径分发；对外保持四个 RESTful 路径，打包时共享同一份当前学期数据索引，避免每个函数重复打包。
